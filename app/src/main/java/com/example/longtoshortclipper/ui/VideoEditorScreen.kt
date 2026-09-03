@@ -31,6 +31,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.platform.LocalDensity
 
 // ---------- Aspect Ratio Data ----------
 data class AspectRatio(val label: String, val w: Int, val h: Int)
@@ -386,6 +388,3 @@ fun CropFrameOverlay(
         }
     }
 }
-
-private fun Modifier.offset(x: androidx.compose.ui.unit.Dp, y: androidx.compose.ui.unit.Dp): Modifier =
-    this.then(androidx.compose.foundation.layout.Modifier_offset(x, y))
