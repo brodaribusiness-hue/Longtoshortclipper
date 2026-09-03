@@ -8,7 +8,7 @@
     <application
         android:allowBackup="true"
         android:label="Long to Short Clipper"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/ic_menu_video"
         android:supportsRtl="true"
         android:theme="@style/Theme.Material3.DayNight.NoActionBar">
 
