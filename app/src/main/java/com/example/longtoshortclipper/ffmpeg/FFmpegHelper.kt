@@ -49,11 +49,13 @@ object FFmpegHelper {
         onProgress: (Float) -> Unit
     ): String {
         val outputFile = File(outputDir, "clip_${System.currentTimeMillis()}.mp4")
+        val durationSeconds = (endSeconds - startSeconds).coerceAtLeast(1)
 
+        // -ss input ke pehle (fast seek) + -t duration (correct clip length)
         val cmd = listOf(
             "-ss", startSeconds.toString(),
-            "-to", endSeconds.toString(),
             "-i", inputFile.absolutePath,
+            "-t", durationSeconds.toString(),
             "-filter:v", "crop=cropW:cropW:cropW:cropH:cropX:cropX:cropX:cropY",
             "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
             "-c:a", "copy",
@@ -64,7 +66,7 @@ object FFmpegHelper {
         return try {
             val session: FFmpegSession = FFmpegKit.executeWithStatisticsCallback(cmd) { stats ->
                 val processedMs = stats.time.toDouble()
-                val totalMs = (endSeconds - startSeconds) * 1000.0
+                val totalMs = durationSeconds * 1000.0
                 if (totalMs > 0) {
                     onProgress((processedMs / totalMs).toFloat().coerceIn(0f, 1f))
                 }
