@@ -56,9 +56,10 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.0")
     implementation("androidx.media3:media3-ui:1.4.0")
 
-    implementation("com.arthenica:ffmpeg-kit-full-gpl:6.0-2.LTS")
+    implementation("com.antonkarpenko:ffmpegkit-full-gpl:1.2.4")
 
     implementation("com.google.mlkit:face-detection:16.1.6")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
+
