@@ -173,7 +173,7 @@ fun EditorScreen(
                 modifier = Modifier
                     .size(52.dp)
                     .background(Accent, CircleShape)
-                    .clickableNoRipple { viewModel.togglePlay() },
+                    .clickable { viewModel.togglePlay() },
                 contentAlignment = Alignment.Center,
             ) {
                 if (playing) PauseIcon(28.dp, Color.Black) else PlayIcon(28.dp, Color.Black)

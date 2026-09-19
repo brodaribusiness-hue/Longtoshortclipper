@@ -251,6 +251,6 @@ class ExportManager(private val context: Context) {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
         }
         @Suppress("DEPRECATION")
-        return resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
+        return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
     }
 }
