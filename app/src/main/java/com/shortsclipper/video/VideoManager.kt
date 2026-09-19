@@ -41,19 +41,18 @@ object VideoManager {
         try {
             retriever.setDataSource(context, uri)
             val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            @Suppress("DEPRECATION")
-            val width = retriever.getVideoWidth().takeIf { it > 0 }
-                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-            @Suppress("DEPRECATION")
-            val height = retriever.getVideoHeight().takeIf { it > 0 }
-                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-            val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
             val hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes"
             val captureFps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull() ?: 0f
+            var fallbackWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            var fallbackHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            var fallbackRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
 
             var videoMime: String? = null
             var audioMime: String? = null
             var fps = captureFps
+            var width = 0
+            var height = 0
+            var rotation = 0
             val extractor = MediaExtractor()
             try {
                 extractor.setDataSource(context, uri, null)
@@ -62,6 +61,11 @@ object VideoManager {
                     val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
                     if (mime.startsWith("video/") && videoMime == null) {
                         videoMime = mime
+                        width = format.getInteger(MediaFormat.KEY_WIDTH)
+                        height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                        if (format.containsKey(MediaFormat.KEY_ROTATION)) {
+                            rotation = format.getInteger(MediaFormat.KEY_ROTATION)
+                        }
                         if (fps <= 0f && format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
                             fps = format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat()
                         }
@@ -72,8 +76,14 @@ object VideoManager {
             } finally {
                 extractor.release()
             }
+            if (width <= 0 || height <= 0) {
+                width = fallbackWidth
+                height = fallbackHeight
+                rotation = fallbackRotation
+            }
+            if (rotation == 0 && fallbackRotation != 0) rotation = fallbackRotation
             if (fps <= 0f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && durationMs > 0) {
-                val frameCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_FRAME_COUNT)?.toIntOrNull() ?: 0
+                val frameCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toIntOrNull() ?: 0
                 if (frameCount > 0) fps = frameCount * 1000f / durationMs
             }
 

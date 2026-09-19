@@ -1,6 +1,7 @@
 package com.shortsclipper.tracking
 
 import com.shortsclipper.model.CropTarget
+import com.shortsclipper.model.CropTarget
 import com.shortsclipper.model.FaceBox
 import com.shortsclipper.model.FacePoint
 import com.shortsclipper.model.TransformKeyframe

@@ -99,8 +99,8 @@ class FaceTracker(private val context: Context) {
 
     private fun extractFrame(retriever: MediaMetadataRetriever, timeUs: Long, maxDim: Int): Bitmap? {
         val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            val w = retriever.getVideoWidth().takeIf { it > 0 } ?: 1280
-            val h = retriever.getVideoHeight().takeIf { it > 0 } ?: 720
+            val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()?.takeIf { it > 0 } ?: 1280
+            val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()?.takeIf { it > 0 } ?: 720
             val scale = maxDim.toFloat() / maxOf(w, h)
             val sw = (w * scale).toInt().coerceAtLeast(64)
             val sh = (h * scale).toInt().coerceAtLeast(64)

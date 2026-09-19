@@ -272,10 +272,7 @@ private fun EditorAction(label: String, modifier: Modifier = Modifier, highlight
 }
 
 private fun Modifier.aspectRatioFrom(w: Int, h: Int): Modifier =
-    if (h > 0 && w > 0) this.then(Modifier.aspectRatioSafely(w.toFloat() / h)) else this
-
-private fun Modifier.aspectRatioSafely(ratio: Float): Modifier =
-    this.then(androidx.compose.foundation.layout.aspectRatioModifier(ratio))
+    if (h > 0 && w > 0) this.aspectRatio(w.toFloat() / h) else this
 
 @Composable
 private fun TrackingSheetContent(viewModel: EditorViewModel) {
@@ -432,11 +429,3 @@ private fun SilenceSheetContent(viewModel: EditorViewModel) {
 
 private fun Float.format1(): String = String.format("%.1f", this)
 
-@Composable
-private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
-    this.then(
-        Modifier.clickableInline(onClick)
-    )
-
-private fun Modifier.clickableInline(onClick: () -> Unit): Modifier =
-    this.then(androidx.compose.foundation.clickable(onClick = onClick))

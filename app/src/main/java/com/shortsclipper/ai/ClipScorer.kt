@@ -1,6 +1,7 @@
 package com.shortsclipper.ai
 
 import com.shortsclipper.model.ScoreComponents
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -57,7 +58,7 @@ object ClipScorer {
 
         // Completeness: full sentences, conclusion present, sensible duration.
         val lastSignals = HighlightAnalyzer.signalsFor(last, sentences)
-        val durationRatio = durationMs / (targetDurationSecs * 1000f)
+        val durationRatio = durationMs.toFloat() / (targetDurationSecs * 1000f)
         val durationFit = (1f - kotlin.math.abs(1f - durationRatio) * 0.8f).coerceIn(0f, 1f)
         val completenessRaw = 0.5f * durationFit +
             0.2f * (if (lastSignals.conclusion > 0f) 1f else 0.5f) +

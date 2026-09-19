@@ -108,9 +108,9 @@ fun TimelineView(
                 .background(BgControl)
                 .horizontalScroll(rememberScrollState()),
         ) {
-            val densityDp = maxWidth
-            val totalWidth = densityDp * zoom
-            val widthPx = totalWidth.toPx()
+            val density = LocalDensity.current
+            val totalWidth = maxWidth * zoom
+            val widthPx = with(density) { totalWidth.toPx() }
             val msPerPx = durationMs / widthPx
 
             fun xToMs(x: Float): Long = (x * msPerPx).toLong().coerceIn(0L, durationMs)

@@ -13,7 +13,7 @@ import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.effect.MatrixTransformation
+import androidx.media3.effect.GlMatrixTransformation
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -169,7 +169,7 @@ class ExportManager(private val context: Context) {
                         .build()
                 )
                 .build()
-            val matrix = MatrixTransformation { presentationTimeUs ->
+            val matrix = GlMatrixTransformation { presentationTimeUs ->
                 val sourceTimeMs = segment.startMs + presentationTimeUs / 1000
                 val rect = CropCalculator.rectAt(state, sourceTimeMs)
                 CropCalculator.toVertexMatrix(rect, displayW, displayH, plan.outWidth, plan.outHeight)

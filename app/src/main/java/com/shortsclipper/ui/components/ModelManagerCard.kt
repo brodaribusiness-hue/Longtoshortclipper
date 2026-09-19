@@ -161,7 +161,3 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
     }
 }
 
-private fun key(refresh: Int, content: @Composable () -> Unit) {
-    androidx.compose.runtime.saveable.rememberSaveable(refresh) { 0 }
-    content()
-}

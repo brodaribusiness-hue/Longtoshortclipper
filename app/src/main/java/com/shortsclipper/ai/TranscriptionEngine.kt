@@ -65,7 +65,7 @@ class TranscriptionEngine {
             RandomAccessFile(pcmFile, "r").use { raf ->
                 for (w in 0 until totalWindows) {
                     if (isCancelled()) throw InterruptedException("Transcription cancelled")
-                    val windowStartSample = w * hopSamples
+                    val windowStartSample = w.toLong() * hopSamples
                     val count = min(windowSamples.toLong(), totalSamples - windowStartSample).toInt()
                     if (count <= 0) break
                     val chunk = readSamples(raf, windowStartSample, count)
