@@ -1,5 +1,9 @@
 name: Build
 
+permissions:
+  contents: write
+  issues: write
+
 on:
   push:
     branches: [main, 'arena/**']
@@ -98,23 +102,24 @@ jobs:
           if-no-files-found: ignore
 
       # CI raw logs are not fetchable from some restricted networks, so on
-      # failure we open a GitHub issue carrying the error tail (readable via API).
-      - name: Report errors to an issue (on failure)
+      # failure we push the error tail to the `ci-errors` branch and open an
+      # issue - both readable via api.github.com.
+      - name: Report errors (on failure)
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "Build errors for commit ${GITHUB_SHA::7}:"
-            echo
-            echo '```'
+            echo "Build errors for commit ${GITHUB_SHA::7}"
             grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by|A problem occurred" build_output.log 2>/dev/null | sort -u | head -150
-            echo '```'
-            echo "Last 50 log lines:"
-            echo '```'
+            echo
+            echo "=== last 50 log lines ==="
             tail -50 build_output.log 2>/dev/null
-            echo '```'
-          } > /tmp/ci_errors.md
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "CI build errors ${GITHUB_SHA::7}" \
-            --body-file /tmp/ci_errors.md || true
+          } > ci-errors.md
+          git config user.name "ci-log-bot"
+          git config user.email "ci-log-bot@users.noreply.github.com"
+          git checkout -B ci-errors
+          git add ci-errors.md
+          git commit -m "CI error log ${GITHUB_SHA::7}" || true
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-errors || echo "branch push failed"
+          gh issue create --title "CI build errors ${GITHUB_SHA::7}" --body-file ci-errors.md || echo "issue create failed"
