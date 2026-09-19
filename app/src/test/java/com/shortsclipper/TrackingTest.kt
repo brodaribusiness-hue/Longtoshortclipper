@@ -1,6 +1,7 @@
 package com.shortsclipper
 
 import com.shortsclipper.model.FaceBox
+import com.shortsclipper.model.FacePoint
 import com.shortsclipper.model.SmoothingPreset
 import com.shortsclipper.model.TransformKeyframe
 import com.shortsclipper.model.TrackingState

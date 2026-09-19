@@ -48,7 +48,7 @@ class ClipGenerationTest {
     @Test
     fun `long transcript yields multiple distinct candidates`() {
         val transcript = syntheticTranscript(24)
-        val durationMs = 24 * 8 * 200 + 24 * 320 // ~45s of content
+        val durationMs = 24L * 8 * 200 + 24 * 320 // ~45s of content
         val candidates = ClipGenerator.generate(transcript, durationMs, TargetDuration.T15)
         assertTrue("expected several candidates, got ${candidates.size}", candidates.size in 2..8)
         // No near duplicates.
@@ -56,7 +56,7 @@ class ClipGenerationTest {
             for (j in i + 1 until candidates.size) {
                 assertTrue(
                     "candidates $i and $j overlap too much",
-                    ClipGenerator.iou(candidates[i], candidates[j]) <= ClipGeneratorTest.IOU_LIMIT,
+                    ClipGenerator.iou(candidates[i], candidates[j]) <= IOU_LIMIT,
                 )
             }
         }
