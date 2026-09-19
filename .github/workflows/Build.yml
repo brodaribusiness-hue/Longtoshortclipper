@@ -115,21 +115,11 @@ jobs:
             grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by|A problem occurred" build_output.log 2>/dev/null | sort -u | head -80
             echo
             echo "=== failing unit tests ==="
-            python3 - << 'PYEOF' || true
-import glob, re
-for f in sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml')):
-    s = open(f, encoding='utf-8', errors='replace').read()
-    for m in re.finditer(r'<testcase name="([^"]+)" classname="([^"]+)"[^>]*>(.*?)</testcase>', s, re.S):
-        name, cls, body = m.group(1), m.group(2), m.group(3)
-        if '<failure' in body or '<error' in body:
-            fm = re.search(r'<(?:failure|error)[^>]*message="([^"]*)"', body)
-            print(f'FAIL {cls}.{name}')
-            if fm:
-                print('   msg:', fm.group(1)[:400].replace('&#10;', ' | '))
-            for am in re.finditer(r'(?:at | Caused|AssertionError|Exception)[^\n]*', body):
-                print('   ', am.group(0)[:200])
-                break
-PYEOF
+            for f in app/build/test-results/testDebugUnitTest/*.xml; do
+              [ -e "$f" ] || continue
+              awk '/<testcase name=/{tc=$0} /<failure|<error/{if (tc!=""){gsub(/^[ \t]+/,"",tc); print tc; print "   " prev; tc=""}} {prev=$0}' "$f" | head -40
+              grep -oE '<failure message="[^"]{0,300}' "$f" | head -10
+            done
             echo
             echo "=== last 30 log lines ==="
             tail -30 build_output.log 2>/dev/null
