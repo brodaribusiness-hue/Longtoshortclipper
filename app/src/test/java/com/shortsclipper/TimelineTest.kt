@@ -28,10 +28,10 @@ class TimelineTest {
     fun `removes interior silence and keeps padding`() {
         val segments = ExportPlanner.buildSegments(0, 20_000, listOf(SilenceEdit(5_000, 8_000)))
         assertEquals(2, segments.size)
-        // pad of 120ms is kept inside the speech
+        // 120ms of quiet is kept on each side so words are never clipped
         assertEquals(0L, segments[0].startMs)
-        assertEquals(5_000L - ExportPlanner.KEEP_PAD_MS, segments[0].endMs)
-        assertEquals(8_000L + ExportPlanner.KEEP_PAD_MS, segments[1].startMs)
+        assertEquals(5_000L + ExportPlanner.KEEP_PAD_MS, segments[0].endMs)
+        assertEquals(8_000L - ExportPlanner.KEEP_PAD_MS, segments[1].startMs)
         assertEquals(20_000L, segments[1].endMs)
     }
 
@@ -58,7 +58,7 @@ class TimelineTest {
             timeline = TimelineState(0, 20_000),
             silenceRemovals = listOf(SilenceEdit(5_000, 8_000)),
         )
-        assertEquals(17_000L, state.editedDurationMs)
+        assertEquals(20_000L - 2_760L, state.editedDurationMs)
     }
 
     @Test
@@ -67,9 +67,14 @@ class TimelineTest {
             timeline = TimelineState(0, 20_000),
             silenceRemovals = listOf(SilenceEdit(5_000, 8_000)),
         )
-        assertEquals(4_880L, state.sourceAt(4_880L)) // before cut: identity
-        assertEquals(8_120L, state.sourceAt(5_000L - ExportPlanner.KEEP_PAD_MS)) // right after cut
-        assertEquals(20_000L - 3_000L, state.sourceAt(17_000L - 1)) // near end
+        val cutStart = 5_000L + ExportPlanner.KEEP_PAD_MS // 5120
+        val cutEnd = 8_000L - ExportPlanner.KEEP_PAD_MS   // 7880
+        assertEquals(cutStart - 1, state.sourceAt(cutStart - 1)) // before cut: identity
+        assertEquals(cutEnd, state.sourceAt(cutStart))           // first edited ms jumps past the cut
+        assertEquals(cutEnd + 1, state.sourceAt(cutStart + 1))
+        // last edited ms maps just before the end of the source
+        val edited = state.editedDurationMs
+        assertEquals(19_999L, state.sourceAt(edited - 1))
     }
 
     @Test

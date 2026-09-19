@@ -35,7 +35,7 @@ class CropCalculatorTest {
     fun `center is clamped so crop stays inside frame`() {
         val t = CropCalculator.clampCenter(0f, 0f, 1.5f, 1920, 1080)
         assertTrue(t.centerX > 0f)
-        assertTrue(t.centerY == 0.5f)
+        assertEquals(0.3333f, t.centerY, 0.001f) // clamped to the top edge
     }
 
     @Test
@@ -57,19 +57,18 @@ class CropCalculatorTest {
         val vx = outW / (s * displayW)
         val vy = outH / (s * displayH)
 
-        // Left crop edge must map to -vx; right edge to +vx.
-        val leftNdc = 2f * (rect.centerX - rect.widthFrac) - 1f
-        val rightNdc = 2f * (rect.centerX + rect.widthFrac) - 1f
+        // In NDC the crop half-extent equals the width/height fraction.
+        val leftNdc = 2f * rect.centerX - 1f - rect.widthFrac
+        val rightNdc = 2f * rect.centerX - 1f + rect.widthFrac
         val leftOut = m[0] * leftNdc + m[12]
         val rightOut = m[0] * rightNdc + m[12]
         assertNear(-vx, leftOut)
         assertNear(vx, rightOut)
 
         // Bottom crop edge (y down, NDC y up) must map to -vy; top edge to +vy.
-        val bottomNdc = 1f - 2f * (rect.centerY + rect.heightFrac)
-        val topNdc = 1f - 2f * (rect.centerY - rect.heightFrac)
-        val bottomOut = m[5] * bottomNdc + m[13]
-        val topOut = m[5] * topNdc + m[13]
+        val centerNdcY = 1f - 2f * rect.centerY
+        val bottomOut = m[5] * (centerNdcY - rect.heightFrac) + m[13]
+        val topOut = m[5] * (centerNdcY + rect.heightFrac) + m[13]
         assertNear(-vy, bottomOut)
         assertNear(vy, topOut)
     }

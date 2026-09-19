@@ -65,7 +65,7 @@ class TranscriptionTest {
         val windowWords = listOf(
             Word("keep", 0, 300, 0.9f),
             Word("duplicate", 1_000, 1_400, 0.9f), // inside overlap zone
-            Word("new", 1_700, 2_000, 0.9f), // after overlap
+            Word("new", 2_100, 2_400, 0.9f), // after overlap
         )
         val kept = WordAssembler.wordsForWindow(windowWords, windowStartMs = 500, overlapMs = 1_500, isFirstWindow = false)
         assertEquals(listOf("new"), kept.map { it.text })
