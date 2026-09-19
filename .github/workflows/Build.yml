@@ -97,18 +97,24 @@ jobs:
           path: app/build/test-results/
           if-no-files-found: ignore
 
-      # CI raw logs are not fetchable from some restricted networks, so on failure
-      # we put the error summary into the job step summary (fetchable via API).
-      - name: Publish error summary (on failure)
+      # CI raw logs are not fetchable from some restricted networks, so on
+      # failure we open a GitHub issue carrying the error tail (readable via API).
+      - name: Report errors to an issue (on failure)
         if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "## ❌ Build errors (${GITHUB_SHA::7})"
+            echo "Build errors for commit ${GITHUB_SHA::7}:"
+            echo
             echo '```'
-            grep -aE "^e: |error:|FAILED\b|Execution failed for task|FAILURE: Build failed|Caused by" build_output.log 2>/dev/null | sort -u | head -150
+            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by|A problem occurred" build_output.log 2>/dev/null | sort -u | head -150
             echo '```'
-            echo "## Last 40 log lines"
+            echo "Last 50 log lines:"
             echo '```'
-            tail -40 build_output.log 2>/dev/null
+            tail -50 build_output.log 2>/dev/null
             echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+          } > /tmp/ci_errors.md
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "CI build errors ${GITHUB_SHA::7}" \
+            --body-file /tmp/ci_errors.md || true
