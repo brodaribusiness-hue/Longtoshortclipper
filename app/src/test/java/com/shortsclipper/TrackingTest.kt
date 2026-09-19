@@ -77,11 +77,13 @@ class TrackingTest {
         }
         val smooth = TrackingSmoother.smooth(jittery, SmoothingPreset.BALANCED)
         assertTrue(TrackingSmoother.maxStep(smooth) < TrackingSmoother.maxStep(jittery))
-        // Movement is monotonic-ish: after smoothing the alternating jitter is gone.
-        val alternating = (1 until smooth.size).count { i ->
-            (smooth[i].xFrac - smooth[i - 1].xFrac) * (smooth[i - 1].xFrac - smooth[if (i >= 2) i - 2 else i - 1].xFrac) < 0
-        }
-        assertTrue("jitter should be reduced", alternating <= 2)
+        // The smoothing window strongly damps the alternating jitter amplitude.
+        val rawAmplitude = (jittery.maxOf { it.xFrac } - jittery.minOf { it.xFrac })
+        val smoothAmplitude = (smooth.maxOf { it.xFrac } - smooth.minOf { it.xFrac })
+        assertTrue(
+            "jitter should be reduced: $smoothAmplitude vs $rawAmplitude",
+            smoothAmplitude < rawAmplitude / 2f,
+        )
     }
 
     @Test

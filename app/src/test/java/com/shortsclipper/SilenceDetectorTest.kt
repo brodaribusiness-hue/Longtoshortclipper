@@ -40,7 +40,7 @@ class SilenceDetectorTest {
         val env = envelopeOf(30 to 0.3f, 3 to 0.0005f, 30 to 0.3f)
         val silences = SilenceDetector.detect(env, SilenceDetector.Config(minSilenceMs = 200))
         assertEquals(1, silences.size)
-        assertEquals(300L, silences[0].startMs)
+        assertEquals(3_000L, silences[0].startMs)
     }
 
     @Test

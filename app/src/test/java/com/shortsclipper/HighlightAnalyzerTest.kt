@@ -52,8 +52,9 @@ class HighlightAnalyzerTest {
 
     @Test
     fun `density is normalized by words per second`() {
+        // Gaps stay under the 800ms sentence-split threshold.
         val fast = HighlightAnalyzer.splitSentences(words("one", "two", "three", "four.", gap = 10)).first()
-        val slow = HighlightAnalyzer.splitSentences(words("one", "two", "three", "four.", gap = 1_500)).first()
+        val slow = HighlightAnalyzer.splitSentences(words("one", "two", "three", "four.", gap = 500)).first()
         assertTrue(HighlightAnalyzer.signalsFor(fast, listOf(fast)).density > HighlightAnalyzer.signalsFor(slow, listOf(slow)).density)
     }
 

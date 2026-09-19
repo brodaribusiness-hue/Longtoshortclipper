@@ -103,6 +103,7 @@ class ProjectRepositoryTest {
     @Test
     fun `corrupt file loads as null without crashing`() {
         val repo = ProjectRepository(tmp.root)
+        tmp.newFolder("projects")
         tmp.newFile("projects/bad.json").writeText("{ not json ")
         assertNull(repo.load("bad"))
     }

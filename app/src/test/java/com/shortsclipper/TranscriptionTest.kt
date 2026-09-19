@@ -17,7 +17,7 @@ class TranscriptionTest {
         val tokens = listOf(
             token("▁This", 0, 200),
             token("▁is", 220, 300),
-            token("a", 310, 350),
+            token("▁a", 310, 350),
             token("▁test", 360, 600),
         )
         val words = WordAssembler.assemble(tokens)

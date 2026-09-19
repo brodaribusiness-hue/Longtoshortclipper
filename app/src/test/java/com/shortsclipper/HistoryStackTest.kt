@@ -46,6 +46,8 @@ class HistoryStackTest {
         stack.push(4, tag = "drag", coalesceMs = 500, nowMs = 1_400)
         assertEquals(4, stack.current())
         assertEquals(1, stack.undo()) // the whole drag was a single undo step
+        // Redo correctly returns to the coalesced drag result.
+        assertEquals(4, stack.redo())
         assertFalse(stack.canRedo)
     }
 

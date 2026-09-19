@@ -23,6 +23,7 @@ object ClipGenerator {
         videoDurationMs: Long,
         target: TargetDuration,
     ): List<ClipCandidate> {
+        if (videoDurationMs <= 0L) return emptyList()
         val sentences = HighlightAnalyzer.splitSentences(transcript.words)
         if (sentences.isEmpty()) return emptyList()
 
@@ -92,6 +93,10 @@ object ClipGenerator {
         var startIdx = anchor.sentenceIndex
         var endIdx = anchor.sentenceIndex
 
+        // Span measured against the video-bounded end so candidates can never
+        // silently shrink when transcript timing drifts past the container duration.
+        fun spanMs(): Long = min(videoDurationMs, sentences[endIdx].endMs) - sentences[startIdx].startMs
+
         // Include one preceding sentence when it is tightly connected (context).
         val prev = sentences.getOrNull(startIdx - 1)
         if (prev != null && anchorSentence.startMs - prev.endMs <= 700L) {
@@ -99,15 +104,15 @@ object ClipGenerator {
         }
 
         // Extend forward to fill the target duration (never cutting mid-sentence).
-        while (endIdx < sentences.size - 1 && (sentences[endIdx].endMs - sentences[startIdx].startMs) < minMs) {
+        while (endIdx < sentences.size - 1 && spanMs() < minMs) {
             endIdx++
         }
         // Extend backward if still under 60% and there is room.
-        while (startIdx > 0 && (sentences[endIdx].endMs - sentences[startIdx].startMs) < minMs) {
+        while (startIdx > 0 && spanMs() < minMs) {
             startIdx--
         }
         // Trim forward if overshooting the max.
-        while (endIdx > startIdx && (sentences[endIdx].endMs - sentences[startIdx].startMs) > maxMs) {
+        while (endIdx > startIdx && spanMs() > maxMs) {
             endIdx--
         }
 

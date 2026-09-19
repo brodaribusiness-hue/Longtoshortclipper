@@ -84,7 +84,8 @@ class ClipGenerationTest {
         val durationMs = 30L * 8 * 200 + 30 * 320
         val candidates = ClipGenerator.generate(transcript, durationMs, TargetDuration.AUTO)
         assertTrue(candidates.isNotEmpty())
-        assertTrue(candidates.all { it.durationMs in 10_000..80_000 })
+        // AUTO targets are 15/30/60s with a 0.6 lower bound (and video-end clamping).
+        assertTrue(candidates.all { it.durationMs in 8_000..80_000 })
     }
 
     @Test
