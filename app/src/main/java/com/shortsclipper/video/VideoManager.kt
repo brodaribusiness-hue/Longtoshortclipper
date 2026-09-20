@@ -20,7 +20,7 @@ import kotlin.math.sqrt
 
 /**
  * URI-based video access. Metadata is read via MediaMetadataRetriever +
- * MediaExtractor; audio is streamed through a decoder to a temp PCM file
+ * MediaExtractor with resilient fallbacks; audio is streamed through a decoder to a temp PCM file
  * (16 kHz mono float32) - a long video is NEVER loaded into RAM at once.
  */
 object VideoManager {
@@ -37,74 +37,101 @@ object VideoManager {
     )
 
     fun readMetadata(context: Context, uri: Uri, displayName: String): VideoSource {
+        val cleanDisplayName = displayName.trim().ifBlank { "video" }
         val retriever = MediaMetadataRetriever()
+        var durationMs = 0L
+        var hasAudio = false
+        var captureFps = 0f
+        var fallbackWidth = 0
+        var fallbackHeight = 0
+        var fallbackRotation = 0
+        var retrieverSucceeded = false
+
         try {
             retriever.setDataSource(context, uri)
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            val hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes"
-            val captureFps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull() ?: 0f
-            var fallbackWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-            var fallbackHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-            var fallbackRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-
-            var videoMime: String? = null
-            var audioMime: String? = null
-            var fps = captureFps
-            var width = 0
-            var height = 0
-            var rotation = 0
-            val extractor = MediaExtractor()
-            try {
-                extractor.setDataSource(context, uri, null)
-                for (i in 0 until extractor.trackCount) {
-                    val format = extractor.getTrackFormat(i)
-                    val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-                    if (mime.startsWith("video/") && videoMime == null) {
-                        videoMime = mime
-                        width = format.getInteger(MediaFormat.KEY_WIDTH)
-                        height = format.getInteger(MediaFormat.KEY_HEIGHT)
-                        if (format.containsKey(MediaFormat.KEY_ROTATION)) {
-                            rotation = format.getInteger(MediaFormat.KEY_ROTATION)
-                        }
-                        if (fps <= 0f && format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                            fps = format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat()
-                        }
-                    } else if (mime.startsWith("audio/") && audioMime == null) {
-                        audioMime = mime
-                    }
-                }
-            } finally {
-                extractor.release()
-            }
-            if (width <= 0 || height <= 0) {
-                width = fallbackWidth
-                height = fallbackHeight
-                rotation = fallbackRotation
-            }
-            if (rotation == 0 && fallbackRotation != 0) rotation = fallbackRotation
-            if (fps <= 0f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && durationMs > 0) {
-                val frameCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toIntOrNull() ?: 0
-                if (frameCount > 0) fps = frameCount * 1000f / durationMs
-            }
-
-            val rotated = rotation == 90 || rotation == 270
-            return VideoSource(
-                uri = uri.toString(),
-                displayName = displayName,
-                durationMs = durationMs,
-                width = width,
-                height = height,
-                rotationDegrees = rotation,
-                displayWidth = if (rotated) height else width,
-                displayHeight = if (rotated) width else height,
-                fps = fps,
-                hasAudio = hasAudio,
-                videoMimeType = videoMime,
-                audioMimeType = audioMime,
-            )
+            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes"
+            captureFps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull() ?: 0f
+            fallbackWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            fallbackHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            fallbackRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            retrieverSucceeded = true
+        } catch (ignored: Throwable) {
+            // MediaMetadataRetriever failed, extractor below provides fallback
         } finally {
-            retriever.release()
+            runCatching { retriever.release() }
         }
+
+        var videoMime: String? = null
+        var audioMime: String? = null
+        var fps = captureFps
+        var width = 0
+        var height = 0
+        var rotation = 0
+
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(context, uri, null)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/") && videoMime == null) {
+                    videoMime = mime
+                    if (format.containsKey(MediaFormat.KEY_WIDTH)) {
+                        width = format.getInteger(MediaFormat.KEY_WIDTH)
+                    }
+                    if (format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                        height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                    }
+                    if (format.containsKey(MediaFormat.KEY_ROTATION)) {
+                        rotation = format.getInteger(MediaFormat.KEY_ROTATION)
+                    }
+                    if (fps <= 0f && format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                        fps = format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat()
+                    }
+                    if (durationMs <= 0L && format.containsKey(MediaFormat.KEY_DURATION)) {
+                        durationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000L
+                    }
+                } else if (mime.startsWith("audio/") && audioMime == null) {
+                    audioMime = mime
+                    hasAudio = true
+                }
+            }
+        } catch (t: Throwable) {
+            if (!retrieverSucceeded) {
+                throw IllegalArgumentException("Could not extract metadata from video: ${t.message ?: "unsupported format"}")
+            }
+        } finally {
+            runCatching { extractor.release() }
+        }
+
+        if (width <= 0 || height <= 0) {
+            width = fallbackWidth
+            height = fallbackHeight
+        }
+        if (rotation == 0 && fallbackRotation != 0) {
+            rotation = fallbackRotation
+        }
+
+        if (durationMs <= 0 || width <= 0 || height <= 0) {
+            throw IllegalArgumentException("Invalid video file: duration=${durationMs}ms, dimensions=${width}x${height}")
+        }
+
+        val rotated = rotation == 90 || rotation == 270
+        return VideoSource(
+            uri = uri.toString(),
+            displayName = cleanDisplayName,
+            durationMs = durationMs,
+            width = width,
+            height = height,
+            rotationDegrees = rotation,
+            displayWidth = if (rotated) height else width,
+            displayHeight = if (rotated) width else height,
+            fps = fps,
+            hasAudio = hasAudio,
+            videoMimeType = videoMime,
+            audioMimeType = audioMime,
+        )
     }
 
     fun extractFrame(context: Context, uri: Uri, timeMs: Long, maxDim: Int = 512, accurate: Boolean = true): Bitmap? {
@@ -124,8 +151,10 @@ object VideoManager {
                 if (scaled !== frame) frame.recycle()
                 scaled
             } else frame
+        } catch (ignored: Throwable) {
+            null
         } finally {
-            retriever.release()
+            runCatching { retriever.release() }
         }
     }
 

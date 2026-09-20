@@ -34,11 +34,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import android.content.Context
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -89,9 +91,42 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val trackingCancelled = AtomicBoolean(false)
 
     val preferredModel = MutableStateFlow(ModelManager.CATALOG[1]) // base
+    private val _recentProjects = MutableStateFlow<List<ProjectState>>(emptyList())
+    val recentProjects: StateFlow<List<ProjectState>> = _recentProjects.asStateFlow()
 
     init {
         startPlayheadPoller()
+        refreshProjects()
+        initPreferredModel()
+    }
+
+    private fun initPreferredModel() {
+        val prefs = getApplication<Application>().getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val savedId = prefs.getString("preferred_model_id", null)
+        val found = ModelManager.CATALOG.find { it.id == savedId }
+        if (found != null && modelManager.isInstalled(found)) {
+            preferredModel.value = found
+            return
+        }
+        val anyInstalled = ModelManager.CATALOG.find { modelManager.isInstalled(it) }
+        if (anyInstalled != null) {
+            preferredModel.value = anyInstalled
+        } else if (found != null) {
+            preferredModel.value = found
+        }
+    }
+
+    fun setPreferredModel(model: ModelManager.ModelInfo) {
+        preferredModel.value = model
+        getApplication<Application>()
+            .getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putString("preferred_model_id", model.id)
+            .apply()
+    }
+
+    fun refreshProjects() {
+        _recentProjects.value = repository.list()
     }
 
     // ---------------------------------------------------------------- state
@@ -124,7 +159,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         autosaveJob?.cancel()
         autosaveJob = viewModelScope.launch {
             delay(800)
-            repository.save(_state.value)
+            if (repository.save(_state.value)) {
+                refreshProjects()
+            }
         }
     }
 
@@ -146,19 +183,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun importVideo(uri: Uri, displayName: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             try {
+                val cleanName = displayName.trim().ifBlank { "video" }
                 val source = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    VideoManager.readMetadata(getApplication(), uri, displayName)
+                    VideoManager.readMetadata(getApplication(), uri, cleanName)
                 }
-                if (source.durationMs <= 0 || source.displayWidth <= 0) {
-                    onResult(false, "This file could not be read as a video.")
+                if (source.durationMs <= 0 || source.displayWidth <= 0 || source.displayHeight <= 0) {
+                    onResult(false, "This file could not be read as a video (zero duration or dimensions).")
                     return@launch
                 }
-                val project = repository.createProject(source.displayName.removeSuffix(".mp4").ifBlank { "New clip" })
+                val baseProjectName = cleanName.substringBeforeLast('.').trim().ifBlank { "New clip" }
+                val project = repository.createProject(baseProjectName)
                     .copy(source = source, timeline = com.shortsclipper.model.TimelineState(0L, source.durationMs))
                 pcmFile?.delete()
                 pcmFile = null
                 synchronized(history) { history.clear(); history.push(project) }
                 _state.value = project
+                refreshProjects()
                 setupPlayer()
                 onResult(true, null)
             } catch (t: Throwable) {
@@ -651,6 +691,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteProject(id: String) {
         repository.delete(id)
+        refreshProjects()
     }
 
     override fun onCleared() {

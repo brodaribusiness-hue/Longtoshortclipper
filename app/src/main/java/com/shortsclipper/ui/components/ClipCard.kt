@@ -72,8 +72,8 @@ fun ClipCard(
         Row(modifier = Modifier.padding(10.dp)) {
             Box(
                 modifier = Modifier
-                    .width(120.dp)
-                    .height(76.dp)
+                    .width(68.dp)
+                    .height(100.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(BgControl),
                 contentAlignment = Alignment.Center,
@@ -84,7 +84,7 @@ fun ClipCard(
                         bitmap = bmp.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth().height(76.dp),
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
                 Box(
@@ -92,9 +92,9 @@ fun ClipCard(
                         .align(Alignment.BottomStart)
                         .padding(4.dp)
                         .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
                 ) {
-                    Text(formatTime(candidate.durationMs), color = TextPrimary, fontSize = 10.sp)
+                    Text(formatTime(candidate.durationMs), color = TextPrimary, fontSize = 9.sp)
                 }
             }
 

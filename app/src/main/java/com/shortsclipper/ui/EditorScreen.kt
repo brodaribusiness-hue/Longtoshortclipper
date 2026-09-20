@@ -131,8 +131,10 @@ fun EditorScreen(
             VideoPreview(
                 viewModel = viewModel,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatioFrom(source.displayWidth, source.displayHeight),
+                    .fillMaxSize()
+                    .aspectRatio(9f / 16f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black),
             )
             if (trackingProgress >= 0f) {
                 Column(
@@ -270,9 +272,6 @@ private fun EditorAction(label: String, modifier: Modifier = Modifier, highlight
         Text(label, fontSize = 11.sp, maxLines = 1)
     }
 }
-
-private fun Modifier.aspectRatioFrom(w: Int, h: Int): Modifier =
-    if (h > 0 && w > 0) this.aspectRatio(w.toFloat() / h) else this
 
 @Composable
 private fun TrackingSheetContent(viewModel: EditorViewModel) {

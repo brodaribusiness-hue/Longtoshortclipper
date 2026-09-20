@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -58,7 +59,8 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
-    val projects by androidx.compose.runtime.produceState(viewModel.recentProjects()) { }
+    var isImporting by remember { mutableStateOf(false) }
+    val projects by viewModel.recentProjects.collectAsState()
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -69,11 +71,23 @@ fun HomeScreen(
                 )
             }
             var name = "video"
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx) ?: name
+            runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && idx >= 0) {
+                        val col = cursor.getString(idx)
+                        if (!col.isNullOrBlank()) name = col
+                    }
+                }
             }
+            if (name == "video") {
+                val seg = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+                if (!seg.isNullOrBlank()) name = seg
+            }
+            isImporting = true
+            message = null
             viewModel.importVideo(uri, name) { ok, error ->
+                isImporting = false
                 message = error
                 if (ok) onOpenEditor()
             }
@@ -105,13 +119,20 @@ fun HomeScreen(
 
         Button(
             onClick = { importLauncher.launch(arrayOf("video/*")) },
+            enabled = !isImporting,
             modifier = Modifier.fillMaxWidth().height(52.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
             shape = RoundedCornerShape(12.dp),
         ) {
-            Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
-            Spacer(Modifier.width(8.dp))
-            Text("Import Long Video", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            if (isImporting) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("Reading video…", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            } else {
+                Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
+                Spacer(Modifier.width(8.dp))
+                Text("Import Long Video", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
 
         if (message != null) {

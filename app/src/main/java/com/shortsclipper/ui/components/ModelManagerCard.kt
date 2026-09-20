@@ -1,18 +1,27 @@
 package com.shortsclipper.ui.components
 
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,15 +50,44 @@ import kotlinx.coroutines.launch
 
 /**
  * Whisper model manager: explicit, user-controlled downloads from the
- * official open-source whisper.cpp model repository, or local import.
+ * official open-source whisper.cpp model repository, or local .bin file import.
  */
 @Composable
 fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var downloading by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf(0f) }
     var error by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    error = null
+                    var fileName = "imported_model.bin"
+                    runCatching {
+                        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && idx >= 0) {
+                                val n = cursor.getString(idx)
+                                if (!n.isNullOrBlank()) fileName = n
+                            }
+                        }
+                    }
+                    val imported = viewModel.modelManager.importFromFile(uri, fileName)
+                    val matchedCatalog = ModelManager.CATALOG.find { it.fileName == imported.name }
+                    if (matchedCatalog != null) {
+                        viewModel.setPreferredModel(matchedCatalog)
+                    }
+                    refresh++
+                } catch (t: Throwable) {
+                    error = t.message ?: "Failed to import model"
+                }
+            }
+        }
+    }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -58,7 +97,7 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
         Column(modifier = Modifier.padding(14.dp)) {
             Text("Transcription models", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                "Speech-to-text runs fully on-device. Download a model once (official whisper.cpp models); after that no internet is needed.",
+                "Speech-to-text runs fully on-device. Download an official whisper.cpp model once or import a local .bin file; no internet is needed during transcription.",
                 color = TextSecondary,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
@@ -96,7 +135,7 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
                             )
                         } else if (installed) {
                             if (!isPreferred) {
-                                TextButton(onClick = { viewModel.preferredModel.value = model }) {
+                                TextButton(onClick = { viewModel.setPreferredModel(model) }) {
                                     Text("Use", color = Accent, fontSize = 12.sp)
                                 }
                             }
@@ -121,9 +160,7 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
                                                 },
                                                 isCancelled = { false },
                                             )
-                                            if (viewModel.preferredModel.value.approxSizeMB > model.approxSizeMB || !viewModel.modelManager.isInstalled(viewModel.preferredModel.value)) {
-                                                viewModel.preferredModel.value = model
-                                            }
+                                            viewModel.setPreferredModel(model)
                                         } catch (t: Throwable) {
                                             error = t.message ?: "Download failed"
                                         } finally {
@@ -149,15 +186,27 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
             }
 
             if (error != null) {
-                Text(error!!, color = Error, fontSize = 11.sp)
+                Text(error!!, color = Error, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
             }
-            Text(
-                "Free space: ${viewModel.modelManager.freeSpaceMB()} MB",
-                color = TextSecondary,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextPrimary)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import .bin Model", fontSize = 12.sp, color = TextPrimary)
+                }
+                Text(
+                    "Free space: ${viewModel.modelManager.freeSpaceMB()} MB",
+                    color = TextSecondary,
+                    fontSize = 10.sp,
+                )
+            }
         }
     }
 }
-

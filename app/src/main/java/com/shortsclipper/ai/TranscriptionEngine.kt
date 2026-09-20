@@ -105,13 +105,20 @@ class TranscriptionEngine {
             }
 
             // Deduplicate words that might have been captured across window boundaries
+            fun normalizeWord(t: String): String = t.filter { it.isLetterOrDigit() }.lowercase()
+
             val deduplicatedWords = ArrayList<com.shortsclipper.model.Word>()
             for (word in allWords.sortedBy { it.startTimeMs }) {
                 val prev = deduplicatedWords.lastOrNull()
                 if (prev != null) {
-                    val sameText = prev.text.equals(word.text, ignoreCase = true)
-                    val timeOverlap = word.startTimeMs < prev.endTimeMs + 300L
-                    if (sameText && timeOverlap) {
+                    val normPrev = normalizeWord(prev.text)
+                    val normCurr = normalizeWord(word.text)
+                    val sameNormalized = normPrev.isNotEmpty() && normPrev == normCurr
+                    val exactMatch = prev.text.equals(word.text, ignoreCase = true)
+                    val timeOverlap = word.startTimeMs < prev.endTimeMs + 300L ||
+                        (word.startTimeMs >= prev.startTimeMs && kotlin.math.abs(word.startTimeMs - prev.startTimeMs) < 600L)
+
+                    if ((sameNormalized || exactMatch) && timeOverlap) {
                         if (word.confidence > prev.confidence) {
                             deduplicatedWords[deduplicatedWords.size - 1] = word
                         }
@@ -129,8 +136,12 @@ class TranscriptionEngine {
             val deduplicatedSegments = ArrayList<Segment>()
             for (seg in allSegments.sortedBy { it.startTimeMs }) {
                 val prev = deduplicatedSegments.lastOrNull()
-                if (prev != null && prev.text.equals(seg.text, ignoreCase = true) && seg.startTimeMs < prev.endTimeMs + 500L) {
-                    continue
+                if (prev != null) {
+                    val sameText = prev.text.trim().equals(seg.text.trim(), ignoreCase = true)
+                    val timeOverlap = seg.startTimeMs < prev.endTimeMs + 500L
+                    if (sameText && timeOverlap) {
+                        continue
+                    }
                 }
                 val validSeg = if (seg.endTimeMs <= seg.startTimeMs) {
                     seg.copy(endTimeMs = seg.startTimeMs + 200L)

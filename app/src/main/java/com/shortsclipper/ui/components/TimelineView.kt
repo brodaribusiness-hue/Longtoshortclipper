@@ -184,7 +184,6 @@ fun TimelineView(
                 }
 
                 // Silence removals overlay.
-                val removals = currentRemovals
                 for (r in removals) {
                     drawRect(
                         color = Color(0xFFEF4444).copy(alpha = 0.25f),
@@ -226,9 +225,6 @@ fun TimelineView(
                 drawCircle(TextPrimary, radius = 7f, center = Offset(px, 8f))
                 drawCircle(BgControl, radius = 3.5f, center = Offset(px, 8f))
             }
-
-            // Second canvas just for removals capture (kept in a var used above).
-            currentRemovals = removalsLocal
         }
 
         Row(
@@ -250,8 +246,3 @@ fun TimelineView(
         }
     }
 }
-
-// Timeline needs the applied removals for the red overlay; set by EditorScreen
-// right before composing. Kept as a small composition-local style holder.
-private var currentRemovals: List<com.shortsclipper.model.SilenceEdit> = emptyList()
-private var removalsLocal: List<com.shortsclipper.model.SilenceEdit> = emptyList()

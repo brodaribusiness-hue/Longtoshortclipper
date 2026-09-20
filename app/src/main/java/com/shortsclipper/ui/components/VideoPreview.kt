@@ -99,6 +99,7 @@ fun VideoPreview(
             TrackingOverlay(
                 boxes = boxes,
                 selectedId = state.tracking.targetFaceId,
+                cropRect = cropRect,
                 modifier = Modifier.fillMaxSize(),
                 onSelect = { viewModel.selectFace(it) },
             )

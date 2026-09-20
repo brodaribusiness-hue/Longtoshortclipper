@@ -130,6 +130,12 @@ class ModelManager(private val context: Context) {
             onProgress(dest.length(), dest.length())
             return@withContext dest
         }
+
+        val freeMb = freeSpaceMB()
+        if (freeMb < info.approxSizeMB + 50) {
+            throw IOException("Insufficient storage: requires at least ${info.approxSizeMB + 50} MB free, only $freeMb MB available.")
+        }
+
         val part = File(modelsDir, info.fileName + ".part")
         part.parentFile?.mkdirs()
         var connection: HttpURLConnection? = null
@@ -177,14 +183,17 @@ class ModelManager(private val context: Context) {
 
     /** Imports a user-picked .bin file (SAF uri) into the local model folder. */
     suspend fun importFromFile(uri: Uri, displayName: String): File = withContext(Dispatchers.IO) {
-        val safeName = displayName.ifBlank { "imported_model.bin" }
+        val safeName = displayName.trim().ifBlank { "imported_model.bin" }
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val dest = File(modelsDir, safeName)
         context.contentResolver.openInputStream(uri)?.use { input ->
             dest.outputStream().use { output -> input.copyTo(output) }
         } ?: throw IOException("Cannot open selected file")
         if (dest.length() < MIN_VALID_BYTES || !looksLikeGgml(dest)) {
             dest.delete()
-            throw IOException("Selected file is not a valid whisper ggml model")
+            throw IOException("Selected file is not a valid whisper ggml model (too small or invalid header)")
         }
         dest
     }
