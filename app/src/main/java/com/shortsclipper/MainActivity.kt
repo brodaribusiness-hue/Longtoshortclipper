@@ -72,6 +72,10 @@ fun AppRoot(viewModel: EditorViewModel = viewModel()) {
         )
         Screen.Clips -> ClipsScreen(
             viewModel = viewModel,
+            onOpenAnalysis = {
+                back()
+                go(Screen.Analysis)
+            },
             onClose = { back() },
         )
         Screen.Export -> ExportScreen(

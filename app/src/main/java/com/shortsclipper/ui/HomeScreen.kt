@@ -98,9 +98,8 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
-        Spacer(Modifier.height(28.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier.size(38.dp).background(Accent, CircleShape),
@@ -111,16 +110,16 @@ fun HomeScreen(
             Spacer(Modifier.width(10.dp))
             Column {
                 Text("ShortsClipper", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Text("Long videos → perfectly framed shorts, 100% on-device", color = TextSecondary, fontSize = 12.sp)
+                Text("Long videos → vertical shorts · On-device processing", color = TextSecondary, fontSize = 12.sp)
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
 
         Button(
             onClick = { importLauncher.launch(arrayOf("video/*")) },
             enabled = !isImporting,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
             shape = RoundedCornerShape(12.dp),
         ) {
@@ -139,16 +138,16 @@ fun HomeScreen(
             Text(message!!, color = Error, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
         Text("Recent projects", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
 
         if (projects.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(BgSecondary, RoundedCornerShape(12.dp))
-                    .padding(18.dp),
+                    .padding(16.dp),
             ) {
                 Text("No projects yet. Import a long video to start.", color = TextSecondary, fontSize = 12.sp)
             }
@@ -158,10 +157,14 @@ fun HomeScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp)
+                        .padding(vertical = 3.dp)
                         .background(BgSecondary, RoundedCornerShape(12.dp))
                         .clickable {
-                            if (viewModel.loadProject(project.id)) onOpenEditor()
+                            if (viewModel.loadProject(project.id)) {
+                                onOpenEditor()
+                            } else {
+                                message = "Could not open project (source video may have been moved or removed)."
+                            }
                         }
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -188,16 +191,16 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
         ModelManagerCard(viewModel)
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
         Text(
-            "Private by design: videos, transcripts and exports never leave your device. " +
-                "Content Potential scores are local content-quality signals, not engagement guarantees.",
+            "Private by design: once a model is set up, videos, transcripts and exports never leave your device. " +
+                "Content Potential scores are local content-quality signals, not viral guarantees.",
             color = TextSecondary,
             fontSize = 10.sp,
         )
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(20.dp))
     }
 }

@@ -70,7 +70,7 @@ fun VideoPreview(
                         change.consume()
                         val dCx = dragAmount.x * cropRect.widthFrac / boxWpx
                         val dCy = dragAmount.y * cropRect.heightFrac / boxHpx
-                        viewModel.dragKeyframeAtPlayhead(cropRect.centerX + dCx, cropRect.centerY + dCy)
+                        viewModel.dragKeyframeAtPlayhead(cropRect.centerX - dCx, cropRect.centerY - dCy)
                     }
                 },
         ) {

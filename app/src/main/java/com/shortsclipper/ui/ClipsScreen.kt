@@ -41,6 +41,7 @@ import com.shortsclipper.ui.theme.TextSecondary
 @Composable
 fun ClipsScreen(
     viewModel: EditorViewModel,
+    onOpenAnalysis: () -> Unit = {},
     onClose: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
@@ -93,7 +94,7 @@ fun ClipsScreen(
                 )
                 if (state.transcript == null) {
                     Button(
-                        onClick = onClose,
+                        onClick = onOpenAnalysis,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
                         modifier = Modifier.padding(top = 12.dp),
                     ) {

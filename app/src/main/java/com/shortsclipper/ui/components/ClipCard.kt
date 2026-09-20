@@ -60,7 +60,8 @@ fun ClipCard(
 ) {
     val context = LocalContext.current
     val thumbnail by produceState<Bitmap?>(initialValue = null, candidate.id) {
-        value = VideoManager.extractFrame(context, android.net.Uri.parse(videoUri), candidate.startMs + 200, maxDim = 360, accurate = false)
+        val frameTime = candidate.startMs + minOf(200L, candidate.durationMs / 2)
+        value = VideoManager.extractFrame(context, android.net.Uri.parse(videoUri), frameTime, maxDim = 360, accurate = false)
     }
 
     Card(

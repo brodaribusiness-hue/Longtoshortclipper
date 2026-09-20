@@ -125,6 +125,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             .apply()
     }
 
+    fun isModelReady(): Boolean =
+        modelManager.isInstalled(preferredModel.value) || ModelManager.CATALOG.any { modelManager.isInstalled(it) }
+
     fun refreshProjects() {
         _recentProjects.value = repository.list()
     }
@@ -214,6 +217,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             it.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     this@EditorViewModel.isPlaying.value = isPlaying
+                }
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    this@EditorViewModel.isPlaying.value = false
                 }
             })
         }
@@ -485,9 +491,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
                 // 2. Transcribe (local whisper.cpp) + 3. word timestamps.
                 step(AnalysisStep.TRANSCRIBE, StepState.RUNNING)
+                if (!modelManager.isInstalled(preferredModel.value)) {
+                    val alternate = ModelManager.CATALOG.find { modelManager.isInstalled(it) }
+                    if (alternate != null) {
+                        setPreferredModel(alternate)
+                    }
+                }
                 val modelFile = modelManager.modelFile(preferredModel.value)
                 if (!modelManager.isInstalled(preferredModel.value)) {
-                    step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "No transcription model installed. Open Model Manager on the home screen and download one (one-time, ~${preferredModel.value.approxSizeMB} MB).")
+                    step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "No transcription model installed. Download or import a whisper.cpp model to enable AI speech analysis.")
                     analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
                     onFinished("No transcription model installed")
                     return@launch

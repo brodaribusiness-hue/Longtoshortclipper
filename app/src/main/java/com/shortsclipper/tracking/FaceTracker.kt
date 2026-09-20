@@ -127,28 +127,31 @@ class FaceTracker(private val context: Context) {
             val scale = maxDim.toFloat() / maxOf(dispW, dispH)
             val sw = (dispW * scale).toInt().coerceAtLeast(64)
             val sh = (dispH * scale).toInt().coerceAtLeast(64)
-            retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, sw, sh)
-        } else {
-            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
-                ?.let { full ->
-                    val scale = maxDim.toFloat() / maxOf(full.width, full.height)
-                    val scaled = Bitmap.createScaledBitmap(
-                        full,
-                        (full.width * scale).toInt().coerceAtLeast(64),
-                        (full.height * scale).toInt().coerceAtLeast(64),
-                        true,
-                    )
-                    if (scaled !== full) full.recycle()
-                    if (rot != 0) {
-                        val matrix = android.graphics.Matrix().apply { postRotate(rot.toFloat()) }
-                        val rotBmp = Bitmap.createBitmap(scaled, 0, 0, scaled.width, scaled.height, matrix, true)
-                        if (rotBmp !== scaled) scaled.recycle()
-                        rotBmp
-                    } else {
-                        scaled
-                    }
+            runCatching {
+                retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, sw, sh)
+            }.getOrNull()
+        } else null
+
+        val finalFrame = frame ?: runCatching {
+            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)?.let { full ->
+                val scale = maxDim.toFloat() / maxOf(full.width, full.height)
+                val scaled = Bitmap.createScaledBitmap(
+                    full,
+                    (full.width * scale).toInt().coerceAtLeast(64),
+                    (full.height * scale).toInt().coerceAtLeast(64),
+                    true,
+                )
+                if (scaled !== full) full.recycle()
+                if (rot != 0) {
+                    val matrix = android.graphics.Matrix().apply { postRotate(rot.toFloat()) }
+                    val rotBmp = Bitmap.createBitmap(scaled, 0, 0, scaled.width, scaled.height, matrix, true)
+                    if (rotBmp !== scaled) scaled.recycle()
+                    rotBmp
+                } else {
+                    scaled
                 }
-        }
-        return frame
+            }
+        }.getOrNull()
+        return finalFrame
     }
 }

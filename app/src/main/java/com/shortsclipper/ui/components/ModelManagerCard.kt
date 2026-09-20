@@ -97,7 +97,7 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
         Column(modifier = Modifier.padding(14.dp)) {
             Text("Transcription models", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                "Speech-to-text runs fully on-device. Download an official whisper.cpp model once or import a local .bin file; no internet is needed during transcription.",
+                "Speech-to-text runs fully on-device once a model is present. Download an official whisper.cpp model (~78 MB Tiny, ~148 MB Base) or import an existing .bin model; no internet is needed during transcription.",
                 color = TextSecondary,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),

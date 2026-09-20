@@ -96,7 +96,7 @@ class TranscriptionEngine {
                         val segStart = seg.startMs + windowStartMs
                         val segEnd = seg.endMs + windowStartMs
                         val segCutoff = if (isFirst) 0L else windowStartMs + overlapMs
-                        if (segStart >= segCutoff || isFirst) {
+                        if (segEnd > segCutoff || isFirst) {
                             allSegments.add(Segment(seg.text.trim(), segStart, segEnd))
                         }
                     }
@@ -123,6 +123,10 @@ class TranscriptionEngine {
                             deduplicatedWords[deduplicatedWords.size - 1] = word
                         }
                         continue
+                    }
+                    if (prev.endTimeMs > word.startTimeMs) {
+                        val adjustedPrevEnd = maxOf(prev.startTimeMs + 40L, word.startTimeMs)
+                        deduplicatedWords[deduplicatedWords.size - 1] = prev.copy(endTimeMs = adjustedPrevEnd)
                     }
                 }
                 val validWord = if (word.endTimeMs <= word.startTimeMs) {

@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -31,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.shortsclipper.model.AnalysisPhase
 import com.shortsclipper.model.AnalysisStep
 import com.shortsclipper.model.StepState
+import com.shortsclipper.ui.components.ModelManagerCard
 import com.shortsclipper.ui.theme.Accent
 import com.shortsclipper.ui.theme.BgPrimary
 import com.shortsclipper.ui.theme.BgSecondary
@@ -41,7 +44,7 @@ import com.shortsclipper.ui.theme.TextSecondary
 
 /**
  * AI analysis pipeline progress: real per-step status with honest progress,
- * cancellable at any point. Everything runs locally.
+ * cancellable at any point. Everything runs locally on-device.
  */
 @Composable
 fun AnalysisScreen(
@@ -51,12 +54,36 @@ fun AnalysisScreen(
 ) {
     val analysis by viewModel.analysisState.collectAsState()
     val state by viewModel.state.collectAsState()
+    val isModelInstalled = viewModel.isModelReady()
 
-    // Auto-start when opened without an active run.
-    LaunchedEffect(state.id) {
-        if (!analysis.isRunning && analysis.phase != AnalysisPhase.DONE) {
+    // Auto-start when opened without an active run, provided a model is ready.
+    LaunchedEffect(state.id, isModelInstalled) {
+        if (isModelInstalled && !analysis.isRunning && analysis.phase != AnalysisPhase.DONE) {
             viewModel.runAnalysis()
         }
+    }
+
+    if (!isModelInstalled) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+        ) {
+            Text("Analyze Video", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "Speech recognition requires an on-device Whisper model. Download an official open-source model once (~78 MB Tiny, ~148 MB Base) or import a local .bin model to enable AI clipping.",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+            )
+            ModelManagerCard(viewModel)
+            Spacer(Modifier.height(16.dp))
+            TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) {
+                Text("Back to editor", color = TextSecondary, fontSize = 12.sp)
+            }
+        }
+        return
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
