@@ -18,6 +18,9 @@ object TrackingEngine {
     /** Max normalized center distance to associate consecutive detections of one face. */
     const val ASSOC_MAX_DIST = 0.35f
 
+    /** Max time gap between consecutive detections of one face before creating a new track. */
+    const val ASSOC_MAX_GAP_MS = 2500L
+
     /** Manual keyframes correct the automatic path within this window. */
     const val MANUAL_BLEND_MS = 800L
 
@@ -39,6 +42,7 @@ object TrackingEngine {
                 for (i in tracks.indices) {
                     if (i in usedTracks) continue
                     val last = tracks[i].last()
+                    if (timeMs - last.timeMs > ASSOC_MAX_GAP_MS) continue
                     val d = hypot((last.centerX - box.centerX).toDouble(), (last.centerY - box.centerY).toDouble()).toFloat()
                     if (d < bestDist) {
                         bestDist = d
@@ -65,7 +69,10 @@ object TrackingEngine {
 
     /** Largest visible face at selection time - sensible default tracking target. */
     fun largestTrack(tracks: List<List<FaceBox>>): List<FaceBox>? =
-        tracks.maxByOrNull { track -> track.firstOrNull()?.let { it.wFrac * it.hFrac } ?: 0f }
+        tracks.maxByOrNull { track ->
+            val avgArea = track.map { it.wFrac * it.hFrac }.average().toFloat()
+            avgArea * track.size.coerceAtMost(20)
+        }
 
     fun toPath(track: List<FaceBox>): List<FacePoint> = track
         .sortedBy { it.timeMs }

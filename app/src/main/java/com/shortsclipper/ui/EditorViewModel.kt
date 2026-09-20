@@ -279,6 +279,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val firstBoxes = rawTracks.mapNotNull { track ->
                     track.firstOrNull { it.timeMs == firstTime && it.faceId >= 0 }
                 }
+                val oldBmp = faceSelectionFrame.value
+                if (oldBmp !== result.firstFrameBitmap) {
+                    oldBmp?.recycle()
+                }
                 faceSelectionFrame.value = result.firstFrameBitmap
                 faceSelectionBoxes.value = firstBoxes
                 if (rawTracks.isEmpty()) {
@@ -576,10 +580,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         exportJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             exportState.value = ExportState(phase = ExportPhase.PREPARING)
+            var tempFile: File? = null
             try {
                 val plan = exportManager.computePlan(s)
                 val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
                 val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
+                tempFile = outFile
                 exportState.value = exportState.value.copy(phase = ExportPhase.TRANSFORMING)
                 val ticker = launch {
                     while (isActive) {
@@ -602,6 +608,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     exportManager.saveToGallery(file, "ShortsClipper_${s.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")}_${System.currentTimeMillis()}.mp4")
                 }
                 file.delete()
+                tempFile = null
                 exportState.value = ExportState(
                     phase = ExportPhase.DONE,
                     progressPercent = 100,
@@ -619,6 +626,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     message = friendlyExportError(t),
                 )
                 onDone(friendlyExportError(t))
+            } finally {
+                tempFile?.delete()
             }
         }
     }
@@ -650,6 +659,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         trackingJob?.cancel()
         autosaveJob?.cancel()
         pcmFile?.delete()
+        faceSelectionFrame.value?.recycle()
+        faceSelectionFrame.value = null
         player?.release()
         player = null
         super.onCleared()

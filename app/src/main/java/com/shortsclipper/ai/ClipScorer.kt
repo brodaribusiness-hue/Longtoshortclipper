@@ -25,13 +25,18 @@ object ClipScorer {
         endIndex: Int,
         targetDurationSecs: Int,
     ): Scored {
-        val clip = sentences.subList(startIndex, endIndex + 1)
+        if (sentences.isEmpty()) {
+            return Scored(ScoreComponents(0f, 0f, 0f, 0f, 0f), 0f, emptyList())
+        }
+        val sIdx = startIndex.coerceIn(0, sentences.size - 1)
+        val eIdx = endIndex.coerceIn(sIdx, sentences.size - 1)
+        val clip = sentences.subList(sIdx, eIdx + 1)
         val first = clip.first()
         val last = clip.last()
         val firstSignals = HighlightAnalyzer.signalsFor(first, sentences)
-        val durationMs = last.endMs - first.startMs
+        val durationMs = (last.endMs - first.startMs).coerceAtLeast(1L)
         val wordCount = clip.sumOf { it.wordCount }
-        val wps = wordCount * 1000f / durationMs.coerceAtLeast(1)
+        val wps = wordCount * 1000f / durationMs.coerceAtLeast(1L)
 
         // Hook: strength of the opening moment.
         var hook = 0.3f

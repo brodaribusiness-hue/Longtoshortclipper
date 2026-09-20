@@ -39,7 +39,7 @@ class ClipGenerationTest {
     @Test
     fun `short transcript still yields a candidate without crashing`() {
         val transcript = syntheticTranscript(2)
-        val candidates = ClipGenerator.generate(transcript, 20_000, TargetDuration.T15)
+        val candidates = ClipGenerator.generate(transcript, 20_000L, TargetDuration.T15)
         // Very short content: either one small candidate or none - but never a crash.
         assertTrue(candidates.size <= 1)
         candidates.forEach { assertTrue(it.endMs > it.startMs) }
@@ -91,8 +91,8 @@ class ClipGenerationTest {
     @Test
     fun `rejected empty and zero duration edge cases`() {
         val empty = Transcript("en", emptyList(), emptyList())
-        assertEquals(0, ClipGenerator.generate(empty, 100_000, TargetDuration.T30).size)
-        assertEquals(0, ClipGenerator.generate(syntheticTranscript(5), 0, TargetDuration.T30).size)
+        assertEquals(0, ClipGenerator.generate(empty, 100_000L, TargetDuration.T30).size)
+        assertEquals(0, ClipGenerator.generate(syntheticTranscript(5), 0L, TargetDuration.T30).size)
     }
 
     @Test

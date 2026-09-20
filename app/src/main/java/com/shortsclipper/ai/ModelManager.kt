@@ -58,7 +58,36 @@ class ModelManager(private val context: Context) {
 
     fun isInstalled(info: ModelInfo): Boolean {
         val f = modelFile(info)
-        return f.exists() && f.length() >= MIN_VALID_BYTES && looksLikeGgml(f)
+        if (f.exists() && f.length() >= MIN_VALID_BYTES && looksLikeGgml(f)) return true
+        return unpackFromAssetsIfAvailable(info)
+    }
+
+    /** Unpacks a bundled model from APK assets into the local models directory if present. */
+    fun unpackFromAssetsIfAvailable(info: ModelInfo): Boolean {
+        val dest = modelFile(info)
+        if (dest.exists() && dest.length() >= MIN_VALID_BYTES && looksLikeGgml(dest)) return true
+        val assetPaths = listOf("models/${info.fileName}", info.fileName)
+        for (assetPath in assetPaths) {
+            try {
+                context.assets.open(assetPath).use { input ->
+                    val part = File(modelsDir, info.fileName + ".part")
+                    part.outputStream().use { output -> input.copyTo(output) }
+                    if (part.length() >= MIN_VALID_BYTES && looksLikeGgml(part)) {
+                        if (dest.exists()) dest.delete()
+                        if (!part.renameTo(dest)) {
+                            part.copyTo(dest, overwrite = true)
+                            part.delete()
+                        }
+                        return true
+                    } else {
+                        part.delete()
+                    }
+                }
+            } catch (ignored: IOException) {
+                // Asset not present in APK
+            }
+        }
+        return false
     }
 
     fun installedSizeMB(info: ModelInfo): Int {
@@ -97,6 +126,10 @@ class ModelManager(private val context: Context) {
         isCancelled: () -> Boolean,
     ): File = withContext(Dispatchers.IO) {
         val dest = modelFile(info)
+        if (unpackFromAssetsIfAvailable(info)) {
+            onProgress(dest.length(), dest.length())
+            return@withContext dest
+        }
         val part = File(modelsDir, info.fileName + ".part")
         part.parentFile?.mkdirs()
         var connection: HttpURLConnection? = null

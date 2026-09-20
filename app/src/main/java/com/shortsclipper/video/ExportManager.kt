@@ -111,7 +111,10 @@ class ExportManager(private val context: Context) {
         }
     }
 
-    private fun evenDown(v: Int): Int = if (v % 2 == 0) v else v - 1
+    private fun evenDown(v: Int): Int {
+        val even = if (v % 2 == 0) v else v - 1
+        return even.coerceAtLeast(176)
+    }
 
     /**
      * Runs the transformation and returns the output file. Never blocks the
@@ -141,7 +144,7 @@ class ExportManager(private val context: Context) {
             )
             .build()
 
-        val transformer = Transformer.Builder(context)
+        val transformerBuilder = Transformer.Builder(context)
             .setVideoMimeType(plan.videoMimeType)
             .setEncoderFactory(encoderFactory)
             .addListener(object : Transformer.Listener {
@@ -157,7 +160,11 @@ class ExportManager(private val context: Context) {
                     }
                 }
             })
-            .build()
+
+        if (src.hasAudio) {
+            transformerBuilder.setAudioMimeType(androidx.media3.common.MimeTypes.AUDIO_AAC)
+        }
+        val transformer = transformerBuilder.build()
 
         val items = plan.segments.map { segment ->
             val mediaItem = MediaItem.Builder()
@@ -178,6 +185,7 @@ class ExportManager(private val context: Context) {
                 plan.outWidth, plan.outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
             )
             EditedMediaItem.Builder(mediaItem)
+                .setRemoveAudio(!src.hasAudio)
                 .setEffects(androidx.media3.transformer.Effects(emptyList(), listOf(matrix, presentation)))
                 .build()
         }
@@ -228,13 +236,18 @@ class ExportManager(private val context: Context) {
         }
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val uri = resolver.insert(collection, values) ?: throw IOException("MediaStore insert failed")
-        resolver.openOutputStream(uri)?.use { out ->
-            file.inputStream().use { input -> input.copyTo(out) }
-        } ?: throw IOException("Could not open output stream")
-        values.clear()
-        values.put(MediaStore.Video.Media.IS_PENDING, 0)
-        resolver.update(uri, values, null, null)
-        return uri
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                file.inputStream().use { input -> input.copyTo(out) }
+            } ?: throw IOException("Could not open output stream")
+            values.clear()
+            values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            return uri
+        } catch (t: Throwable) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw t
+        }
     }
 
     private fun saveLegacy(file: File, displayName: String): Uri {
@@ -243,7 +256,12 @@ class ExportManager(private val context: Context) {
         val dir = File(moviesDir, GALLERY_FOLDER)
         if (!dir.exists()) dir.mkdirs()
         val dest = File(dir, displayName)
-        file.inputStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+        try {
+            file.inputStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+        } catch (t: Throwable) {
+            dest.delete()
+            throw t
+        }
         MediaScannerConnection.scanFile(context, arrayOf(dest.absolutePath), arrayOf("video/mp4"), null)
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DATA, dest.absolutePath)

@@ -47,6 +47,7 @@ object ClipGenerator {
         transcript: Transcript,
     ): List<ClipCandidate> {
         val raw = ArrayList<ClipCandidate>()
+        val seenSpans = HashSet<Pair<Long, Long>>()
         for (anchor in anchors) {
             val targetSecs = if (target == TargetDuration.AUTO) {
                 autoTargetFor(anchor)
@@ -54,7 +55,12 @@ object ClipGenerator {
                 target.seconds
             }
             val candidate = buildOne(sentences, anchor, targetSecs, videoDurationMs, transcript, raw.size)
-            raw.add(candidate)
+            if (candidate != null && candidate.startMs < candidate.endMs && candidate.endMs <= videoDurationMs) {
+                val span = Pair(candidate.startMs, candidate.endMs)
+                if (seenSpans.add(span)) {
+                    raw.add(candidate)
+                }
+            }
         }
 
         // Overlap suppression: keep the higher-scored clip of overlapping pairs.
@@ -84,10 +90,11 @@ object ClipGenerator {
         videoDurationMs: Long,
         transcript: Transcript,
         index: Int,
-    ): ClipCandidate {
-        val targetMs = targetSecs * 1000L
-        val minMs = (targetMs * 0.6f).toLong()
-        val maxMs = (targetMs * 1.25f).toLong()
+    ): ClipCandidate? {
+        if (anchor.sentenceIndex !in sentences.indices) return null
+        val targetMs = (targetSecs.coerceAtLeast(5) * 1000L).coerceAtMost(videoDurationMs)
+        val minMs = (targetMs * 0.6f).toLong().coerceAtLeast(500L)
+        val maxMs = (targetMs * 1.25f).toLong().coerceAtLeast(minMs)
 
         val anchorSentence = sentences[anchor.sentenceIndex]
         var startIdx = anchor.sentenceIndex
@@ -95,11 +102,11 @@ object ClipGenerator {
 
         // Span measured against the video-bounded end so candidates can never
         // silently shrink when transcript timing drifts past the container duration.
-        fun spanMs(): Long = min(videoDurationMs, sentences[endIdx].endMs) - sentences[startIdx].startMs
+        fun spanMs(): Long = (min(videoDurationMs, sentences[endIdx].endMs) - sentences[startIdx].startMs).coerceAtLeast(0L)
 
         // Include one preceding sentence when it is tightly connected (context).
         val prev = sentences.getOrNull(startIdx - 1)
-        if (prev != null && anchorSentence.startMs - prev.endMs <= 700L) {
+        if (prev != null && (anchorSentence.startMs - prev.endMs) in 0..700L) {
             startIdx -= 1
         }
 
@@ -116,8 +123,14 @@ object ClipGenerator {
             endIdx--
         }
 
-        val startMs = max(0L, sentences[startIdx].startMs - START_PAD_MS)
-        val endMs = min(videoDurationMs, sentences[endIdx].endMs + END_PAD_MS)
+        val minClipSpanMs = 500L
+        val rawStart = max(0L, sentences[startIdx].startMs - START_PAD_MS)
+        val rawEnd = min(videoDurationMs, sentences[endIdx].endMs + END_PAD_MS)
+
+        val startMs = rawStart.coerceIn(0L, max(0L, videoDurationMs - minClipSpanMs))
+        val endMs = rawEnd.coerceIn(startMs + minClipSpanMs, videoDurationMs)
+        if (endMs <= startMs) return null
+
         val scored = ClipScorer.score(sentences, startIdx, endIdx, targetSecs)
 
         val title = sentences[anchor.sentenceIndex].text

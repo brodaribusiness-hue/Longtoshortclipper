@@ -60,9 +60,21 @@ object WordAssembler {
      * Filters words of a sliding window so overlapping windows never produce
      * duplicate words. The first window keeps everything.
      */
-    fun wordsForWindow(words: List<Word>, windowStartMs: Long, overlapMs: Long, isFirstWindow: Boolean): List<Word> {
+    fun wordsForWindow(
+        words: List<Word>,
+        windowStartMs: Long,
+        overlapMs: Long,
+        isFirstWindow: Boolean,
+        lastAcceptedEndMs: Long = -1L,
+    ): List<Word> {
         if (isFirstWindow) return words
         val cutoff = windowStartMs + overlapMs
-        return words.filter { it.startTimeMs >= cutoff }
+        return words.filter { word ->
+            if (lastAcceptedEndMs > 0L && lastAcceptedEndMs < cutoff) {
+                word.startTimeMs >= cutoff || (word.startTimeMs >= lastAcceptedEndMs && word.startTimeMs >= windowStartMs)
+            } else {
+                word.startTimeMs >= cutoff
+            }
+        }
     }
 }

@@ -79,24 +79,71 @@ class TranscriptionEngine {
                     val windowStartMs = windowStartSample * 1000L / SAMPLE_RATE
                     val windowEndMs = (windowStartSample + count) * 1000L / SAMPLE_RATE
                     val isFirst = w == 0
+                    val overlapMs = (OVERLAP_SECONDS * 1000).toLong()
 
                     for (seg in parsed.first) {
-                        val words = WordAssembler.assemble(seg.tokens)
-                        val kept = WordAssembler.wordsForWindow(words, windowStartMs, (OVERLAP_SECONDS * 1000).toLong(), isFirst)
+                        val shiftedTokens = seg.tokens.map {
+                            it.copy(
+                                startMs = it.startMs + windowStartMs,
+                                endMs = it.endMs + windowStartMs,
+                            )
+                        }
+                        val words = WordAssembler.assemble(shiftedTokens)
+                        val lastAccepted = allWords.lastOrNull()?.endTimeMs ?: -1L
+                        val kept = WordAssembler.wordsForWindow(words, windowStartMs, overlapMs, isFirst, lastAccepted)
                         allWords.addAll(kept)
-                        if (seg.startMs >= windowStartMs || isFirst) {
-                            allSegments.add(Segment(seg.text.trim(), seg.startMs, seg.endMs))
+
+                        val segStart = seg.startMs + windowStartMs
+                        val segEnd = seg.endMs + windowStartMs
+                        val segCutoff = if (isFirst) 0L else windowStartMs + overlapMs
+                        if (segStart >= segCutoff || isFirst) {
+                            allSegments.add(Segment(seg.text.trim(), segStart, segEnd))
                         }
                     }
                     onProgress((w + 1).toFloat() / totalWindows)
                 }
             }
 
-            val sorted = allWords.sortedBy { it.startTimeMs }
+            // Deduplicate words that might have been captured across window boundaries
+            val deduplicatedWords = ArrayList<com.shortsclipper.model.Word>()
+            for (word in allWords.sortedBy { it.startTimeMs }) {
+                val prev = deduplicatedWords.lastOrNull()
+                if (prev != null) {
+                    val sameText = prev.text.equals(word.text, ignoreCase = true)
+                    val timeOverlap = word.startTimeMs < prev.endTimeMs + 300L
+                    if (sameText && timeOverlap) {
+                        if (word.confidence > prev.confidence) {
+                            deduplicatedWords[deduplicatedWords.size - 1] = word
+                        }
+                        continue
+                    }
+                }
+                val validWord = if (word.endTimeMs <= word.startTimeMs) {
+                    word.copy(endTimeMs = word.startTimeMs + 100L)
+                } else {
+                    word
+                }
+                deduplicatedWords.add(validWord)
+            }
+
+            val deduplicatedSegments = ArrayList<Segment>()
+            for (seg in allSegments.sortedBy { it.startTimeMs }) {
+                val prev = deduplicatedSegments.lastOrNull()
+                if (prev != null && prev.text.equals(seg.text, ignoreCase = true) && seg.startTimeMs < prev.endTimeMs + 500L) {
+                    continue
+                }
+                val validSeg = if (seg.endTimeMs <= seg.startTimeMs) {
+                    seg.copy(endTimeMs = seg.startTimeMs + 200L)
+                } else {
+                    seg
+                }
+                deduplicatedSegments.add(validSeg)
+            }
+
             Transcript(
                 language = language.ifEmpty { "unknown" },
-                words = sorted,
-                segments = allSegments.sortedBy { it.startTimeMs },
+                words = deduplicatedWords,
+                segments = deduplicatedSegments,
             )
         } finally {
             WhisperNative.freeModel(handle)

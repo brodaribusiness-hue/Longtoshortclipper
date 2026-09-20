@@ -174,8 +174,9 @@ object HighlightAnalyzer {
                 .slice((i - 2).coerceAtLeast(0)..(i + 2).coerceAtMost(scores.size - 1))
                 .average().toFloat()
             val previousScore = scores.getOrNull(i - 1) ?: Float.NEGATIVE_INFINITY
+            val nextScore = scores.getOrNull(i + 1) ?: Float.NEGATIVE_INFINITY
             val combined = scores[i] * 0.7f + neighborAvg * 0.3f
-            val isLocalPeak = scores[i] + 0.001f >= previousScore
+            val isLocalPeak = (scores[i] + 0.001f >= previousScore) && (scores[i] + 0.001f >= nextScore)
             if (isLocalPeak && combined >= 0.32f) {
                 anchors.add(Anchor(i, combined, signals[i]))
             }
