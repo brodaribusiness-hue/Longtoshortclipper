@@ -473,7 +473,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 step(AnalysisStep.ANALYZE_CONTENT, StepState.DONE, 1f)
 
                 step(AnalysisStep.FIND_MOMENTS, StepState.RUNNING)
-                val anchors = com.shortsclipper.ai.HighlightAnalyzer.findAnchors(sentences)
+                com.shortsclipper.ai.HighlightAnalyzer.findAnchors(sentences)
                 step(AnalysisStep.FIND_MOMENTS, StepState.DONE, 1f)
 
                 step(AnalysisStep.SCORE, StepState.RUNNING)

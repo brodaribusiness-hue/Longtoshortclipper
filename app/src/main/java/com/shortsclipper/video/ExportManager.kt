@@ -70,7 +70,6 @@ class ExportManager(private val context: Context) {
         val src = state.source ?: throw IllegalStateException("No source video selected")
         val segments = state.exportSegments
         if (segments.isEmpty()) throw IllegalStateException("Invalid timeline selection")
-        val displayW = src.displayWidth.coerceAtLeast(2)
         val displayH = src.displayHeight.coerceAtLeast(2)
 
         val preferredH = when (state.exportQuality) {

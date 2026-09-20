@@ -184,8 +184,8 @@ fun TimelineView(
                 }
 
                 // Silence removals overlay.
-                val removals = currentRemovals
-                for (r in removals) {
+                val activeRemovals = currentRemovals
+                for (r in activeRemovals) {
                     drawRect(
                         color = Color(0xFFEF4444).copy(alpha = 0.25f),
                         topLeft = Offset((r.startMs / msPerPx), 0f),

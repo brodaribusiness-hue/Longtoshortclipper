@@ -53,7 +53,7 @@ fun AppRoot(viewModel: EditorViewModel = viewModel()) {
 
     BackHandler(enabled = nav.size > 1) { back() }
 
-    when (val current = nav.last()) {
+    when (nav.last()) {
         Screen.Home -> HomeScreen(
             viewModel = viewModel,
             onOpenEditor = { go(Screen.Editor) },
