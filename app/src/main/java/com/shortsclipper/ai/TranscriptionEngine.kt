@@ -84,7 +84,7 @@ class TranscriptionEngine {
                         val words = WordAssembler.assemble(seg.tokens)
                         val kept = WordAssembler.wordsForWindow(words, windowStartMs, (OVERLAP_SECONDS * 1000).toLong(), isFirst)
                         allWords.addAll(kept)
-                        if (seg.startMs >= windowStartMs || isFirst) {
+            if (isFirst || seg.startMs >= windowStartMs + (OVERLAP_SECONDS * 1000).toLong()) {
                             allSegments.add(Segment(seg.text.trim(), seg.startMs, seg.endMs))
                         }
                     }

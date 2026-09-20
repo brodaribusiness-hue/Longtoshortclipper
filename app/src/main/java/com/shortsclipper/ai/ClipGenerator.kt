@@ -20,6 +20,7 @@ object ClipGenerator {
 
     fun generate(
         transcript: Transcript,
+
         videoDurationMs: Long,
         target: TargetDuration,
     ): List<ClipCandidate> {
@@ -44,7 +45,7 @@ object ClipGenerator {
         anchors: List<HighlightAnalyzer.Anchor>,
         videoDurationMs: Long,
         target: TargetDuration,
-        transcript: Transcript,
+
     ): List<ClipCandidate> {
         val raw = ArrayList<ClipCandidate>()
         for (anchor in anchors) {
@@ -53,7 +54,7 @@ object ClipGenerator {
             } else {
                 target.seconds
             }
-            val candidate = buildOne(sentences, anchor, targetSecs, videoDurationMs, transcript, raw.size)
+            val candidate = buildOne(sentences, anchor, targetSecs, videoDurationMs, raw.size)
             raw.add(candidate)
         }
 
@@ -82,7 +83,7 @@ object ClipGenerator {
         anchor: HighlightAnalyzer.Anchor,
         targetSecs: Int,
         videoDurationMs: Long,
-        transcript: Transcript,
+
         index: Int,
     ): ClipCandidate {
         val targetMs = targetSecs * 1000L

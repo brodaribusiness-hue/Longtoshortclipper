@@ -58,7 +58,9 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
-    val projects by androidx.compose.runtime.produceState(viewModel.recentProjects()) { }
+    val projects by androidx.compose.runtime.produceState(initialValue = viewModel.recentProjects()) {
+        value = viewModel.recentProjects()
+    }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {

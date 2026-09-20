@@ -331,7 +331,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     /** Adds a manual correction keyframe at the playhead with the current crop center. */
     fun addManualKeyframe() {
         val s = _state.value
-        val source = s.source ?: return
+            if (s.source == null) return
         val time = playheadMs.value.coerceIn(s.timeline.selectionStartMs, s.timeline.selectionEndMs)
         val current = com.shortsclipper.video.CropCalculator.rectAt(s, time)
         val keyframe = TransformKeyframe(
