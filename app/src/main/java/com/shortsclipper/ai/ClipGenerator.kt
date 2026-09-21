@@ -39,6 +39,12 @@ object ClipGenerator {
         return buildCandidates(sentences, anchors, videoDurationMs, target, transcript)
     }
 
+    fun generate(
+        transcript: Transcript,
+        videoDurationMs: Int,
+        target: TargetDuration,
+    ): List<ClipCandidate> = generate(transcript, videoDurationMs.toLong(), target)
+
     private fun buildCandidates(
         sentences: List<HighlightAnalyzer.Sentence>,
         anchors: List<HighlightAnalyzer.Anchor>,

@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -73,19 +73,11 @@ jobs:
         run: |
           {
             echo "## Unit test results"
-            if [ -d "app/build/test-results" ]; then
-              find app/build/test-results -name "*.xml" | while read -r f; do
-                head -3 "$f" | grep testsuite || true
-              done | head -30
-            else
-              echo "No test results directory generated"
-            fi
+            find app/build/test-results -name "*.xml" | while read -r f; do
+              head -3 "$f" | grep testsuite || true
+            done | head -30
             echo "## Build tail"
-            if [ -f "build_output.log" ]; then
-              tail -5 build_output.log || true
-            else
-              echo "No build output log found"
-            fi
+            tail -5 build_output.log || true
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Upload debug APK
@@ -123,12 +115,10 @@ jobs:
             --title "ShortsClipper v1.0 (latest CI build)" \
             --notes "Automated green build of commit ${GITHUB_SHA::7}. The debug APK installs directly (adb install or sideload). The release APK is unsigned - sign it with your own keystore before distributing." \
             --prerelease \
-            || (gh release upload v1.0-latest \
-                app/build/outputs/apk/debug/app-debug.apk#ShortsClipper-debug-installable.apk \
-                app/build/outputs/apk/release/app-release-unsigned.apk#ShortsClipper-release-unsigned.apk \
-                --clobber && \
-                gh release edit v1.0-latest \
-                --notes "Automated green build of commit ${GITHUB_SHA::7}. The debug APK installs directly (adb install or sideload). The release APK is unsigned - sign it with your own keystore before distributing.")
+            || gh release upload v1.0-latest \
+            app/build/outputs/apk/debug/app-debug.apk#ShortsClipper-debug-installable.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk#ShortsClipper-release-unsigned.apk \
+            --clobber
 
       # CI raw logs are not fetchable from some restricted networks, so on
       # failure we push the error tail to the `ci-errors` branch and open an
@@ -140,23 +130,17 @@ jobs:
         run: |
           {
             echo "Build errors for commit ${GITHUB_SHA::7}"
-            if [ -f "build_output.log" ]; then
-              grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by|A problem occurred" build_output.log 2>/dev/null | sort -u | head -80
-            fi
+            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by|A problem occurred" build_output.log 2>/dev/null | sort -u | head -80
             echo
             echo "=== failing unit tests ==="
-            if [ -d "app/build/test-results/testDebugUnitTest" ]; then
-              for f in app/build/test-results/testDebugUnitTest/*.xml; do
-                [ -e "$f" ] || continue
-                awk '/<testcase name=/{tc=$0} /<failure|<error/{if (tc!=""){gsub(/^[ \t]+/,"",tc); print tc; print "   " prev; tc=""}} {prev=$0}' "$f" | head -40
-                grep -oE '<failure message="[^"]{0,300}' "$f" | head -10
-              done
-            fi
+            for f in app/build/test-results/testDebugUnitTest/*.xml; do
+              [ -e "$f" ] || continue
+              awk '/<testcase name=/{tc=$0} /<failure|<error/{if (tc!=""){gsub(/^[ \t]+/,"",tc); print tc; print "   " prev; tc=""}} {prev=$0}' "$f" | head -40
+              grep -oE '<failure message="[^"]{0,300}' "$f" | head -10
+            done
             echo
             echo "=== last 30 log lines ==="
-            if [ -f "build_output.log" ]; then
-              tail -30 build_output.log 2>/dev/null
-            fi
+            tail -30 build_output.log 2>/dev/null
           } > ci-errors.md
           git config user.name "ci-log-bot"
           git config user.email "ci-log-bot@users.noreply.github.com"
