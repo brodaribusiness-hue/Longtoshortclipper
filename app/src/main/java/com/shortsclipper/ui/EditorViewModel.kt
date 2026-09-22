@@ -113,6 +113,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             preferredModel.value = anyInstalled
         } else if (found != null) {
             preferredModel.value = found
+        } else if (modelManager.isLowRamDevice()) {
+            preferredModel.value = ModelManager.CATALOG[0] // tiny on low-RAM devices
         }
     }
 
@@ -504,6 +506,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     onFinished("No transcription model installed")
                     return@launch
                 }
+                val maxThreads = if (modelManager.isLowRamDevice()) 2 else TranscriptionEngine.MAX_THREADS
                 val transcript = transcriptionEngine.transcribe(
                     pcmFile = decoded.pcmFile,
                     modelFile = modelFile,
@@ -511,6 +514,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         step(AnalysisStep.TRANSCRIBE, StepState.RUNNING, p)
                     },
                     isCancelled = { analysisCancelled.get() },
+                    maxThreads = maxThreads,
                 )
                 if (analysisCancelled.get()) throw InterruptedException()
                 step(AnalysisStep.TRANSCRIBE, StepState.DONE, 1f)
@@ -647,13 +651,35 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
-                val file = exportManager.export(
-                    state = _state.value,
-                    plan = plan,
-                    outFile = outFile,
-                    onProgress = { exportState.value = exportState.value.copy(progressPercent = it) },
-                    isCancelled = { exportCancelled.get() },
-                )
+                val file = try {
+                    exportManager.export(
+                        state = _state.value,
+                        plan = plan,
+                        outFile = outFile,
+                        onProgress = { exportState.value = exportState.value.copy(progressPercent = it) },
+                        isCancelled = { exportCancelled.get() },
+                    )
+                } catch (t: Throwable) {
+                    val fallback = if (t !is com.shortsclipper.video.ExportCancelledException && !exportCancelled.get()) {
+                        exportManager.computeFallbackPlan(plan)
+                    } else null
+                    if (fallback != null) {
+                        outFile.delete()
+                        exportState.value = exportState.value.copy(
+                            progressPercent = 0,
+                            message = "Retrying with compatibility encoder profile…",
+                        )
+                        exportManager.export(
+                            state = _state.value,
+                            plan = fallback,
+                            outFile = outFile,
+                            onProgress = { exportState.value = exportState.value.copy(progressPercent = it) },
+                            isCancelled = { exportCancelled.get() },
+                        )
+                    } else {
+                        throw t
+                    }
+                }
                 ticker.cancel()
                 exportState.value = exportState.value.copy(phase = ExportPhase.SAVING, progressPercent = 100)
                 val savedUri = withContext(kotlinx.coroutines.Dispatchers.IO) {

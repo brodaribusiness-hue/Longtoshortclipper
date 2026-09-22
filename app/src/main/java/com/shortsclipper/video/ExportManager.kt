@@ -86,6 +86,26 @@ class ExportManager(private val context: Context) {
         return ExportPlan(targetW, targetH, mime, bitrate, segments)
     }
 
+    /**
+     * Fallback plan for devices whose hardware encoder rejects HEVC or high resolutions.
+     * Uses universal 720p H.264 profile with bounded bitrate.
+     */
+    fun computeFallbackPlan(plan: ExportPlan): ExportPlan? {
+        if (plan.videoMimeType != "video/avc" || plan.outHeight > 1280 || plan.videoBitrateBps > 6_000_000) {
+            val fallbackH = minOf(plan.outHeight, 1280)
+            val fallbackW = evenDown((fallbackH * CropCalculator.TARGET_ASPECT).roundToInt()).coerceAtLeast(176)
+            val fallbackBitrate = minOf(plan.videoBitrateBps, 6_000_000)
+            return ExportPlan(
+                outWidth = fallbackW,
+                outHeight = fallbackH,
+                videoMimeType = "video/avc",
+                videoBitrateBps = fallbackBitrate,
+                segments = plan.segments,
+            )
+        }
+        return null
+    }
+
     private fun pickEncoderMime(sourceMime: String?): String {
         val candidates = ArrayList<String>()
         if (sourceMime == "video/hevc" || sourceMime == "video/avc") candidates.add(sourceMime)

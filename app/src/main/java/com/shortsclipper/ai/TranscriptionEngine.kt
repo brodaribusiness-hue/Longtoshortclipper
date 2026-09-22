@@ -43,6 +43,7 @@ class TranscriptionEngine {
         modelFile: File,
         onProgress: (Float) -> Unit,
         isCancelled: () -> Boolean,
+        maxThreads: Int = MAX_THREADS,
     ): Transcript = withContext(Dispatchers.Default) {
         if (!pcmFile.exists() || pcmFile.length() < 4) throw IllegalStateException("No audio to transcribe")
 
@@ -51,7 +52,7 @@ class TranscriptionEngine {
             throw IllegalStateException("Could not load the transcription model. Reinstall it in the model manager.")
         }
         try {
-            val threads = min(Runtime.getRuntime().availableProcessors(), MAX_THREADS).coerceAtLeast(2)
+            val threads = min(Runtime.getRuntime().availableProcessors(), maxThreads).coerceAtLeast(1)
             val windowSamples = WINDOW_SECONDS * SAMPLE_RATE
             val overlapSamples = (OVERLAP_SECONDS * SAMPLE_RATE).toInt()
             val hopSamples = windowSamples - overlapSamples
@@ -65,6 +66,7 @@ class TranscriptionEngine {
             RandomAccessFile(pcmFile, "r").use { raf ->
                 for (w in 0 until totalWindows) {
                     if (isCancelled()) throw InterruptedException("Transcription cancelled")
+                    kotlinx.coroutines.yield()
                     val windowStartSample = w.toLong() * hopSamples
                     val count = min(windowSamples.toLong(), totalSamples - windowStartSample).toInt()
                     if (count <= 0) break

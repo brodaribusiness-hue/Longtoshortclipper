@@ -51,10 +51,18 @@ class FaceTracker(private val context: Context) {
         try {
             retriever.setDataSource(context, uri)
             val samples = ArrayList<Pair<Long, List<FaceBox>>>()
+            val durationSpan = endMs - startMs
+            val effectiveInterval = when {
+                sampleIntervalMs != TrackingSmoother.SAMPLE_INTERVAL_MS -> sampleIntervalMs
+                durationSpan > 300_000L -> 1200L // > 5 minutes: 1.2s intervals to protect thermals & battery
+                durationSpan > 60_000L -> 500L   // 1 to 5 minutes: 500ms intervals
+                else -> TrackingSmoother.SAMPLE_INTERVAL_MS // <= 1 minute: 250ms responsive tracking
+            }
             var time = startMs.coerceAtLeast(0)
-            val safeEnd = maxOf(endMs, startMs + sampleIntervalMs)
+            val safeEnd = maxOf(endMs, startMs + effectiveInterval)
             while (time <= safeEnd) {
                 if (isCancelled()) throw InterruptedException("Face tracking cancelled")
+                kotlinx.coroutines.yield()
                 val bitmap = extractFrame(retriever, time * 1000, maxDim = 480)
                 if (bitmap != null) {
                     if (firstFrame == null) firstFrame = bitmap
@@ -84,7 +92,7 @@ class FaceTracker(private val context: Context) {
                     bitmap.recycleUnless(firstFrame)
                     onProgress(((time - startMs).toFloat() / (safeEnd - startMs)).coerceIn(0f, 1f))
                 }
-                time += sampleIntervalMs
+                time += effectiveInterval
             }
             PassResult(firstFrame, samples)
         } catch (t: Throwable) {

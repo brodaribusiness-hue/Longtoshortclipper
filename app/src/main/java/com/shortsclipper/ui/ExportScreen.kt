@@ -52,9 +52,26 @@ fun ExportScreen(
     val state by viewModel.state.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     // Legacy devices (< Android 10) need WRITE_EXTERNAL_STORAGE for the gallery save.
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) viewModel.startExport()
+    }
+
+    val startExport = {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (granted) {
+                viewModel.startExport()
+            } else {
+                permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        } else {
+            viewModel.startExport()
+        }
     }
 
     Column(
@@ -141,13 +158,7 @@ fun ExportScreen(
                     modifier = Modifier.padding(top = 4.dp),
                 )
                 Button(
-                    onClick = {
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        } else {
-                            viewModel.startExport()
-                        }
-                    },
+                    onClick = startExport,
                     modifier = Modifier.fillMaxWidth().height(46.dp).padding(top = 16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
                 ) {
@@ -157,13 +168,7 @@ fun ExportScreen(
             com.shortsclipper.model.ExportPhase.CANCELLED -> {
                 Text("Export cancelled", color = TextSecondary, fontSize = 14.sp)
                 Button(
-                    onClick = {
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        } else {
-                            viewModel.startExport()
-                        }
-                    },
+                    onClick = startExport,
                     modifier = Modifier.fillMaxWidth().height(46.dp).padding(top = 16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
                 ) {
@@ -172,13 +177,7 @@ fun ExportScreen(
             }
             com.shortsclipper.model.ExportPhase.IDLE -> {
                 Button(
-                    onClick = {
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        } else {
-                            viewModel.startExport()
-                        }
-                    },
+                    onClick = startExport,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
                     shape = RoundedCornerShape(12.dp),

@@ -51,6 +51,13 @@ class ModelManager(private val context: Context) {
         private const val MIN_VALID_BYTES = 20L * 1024 * 1024
     }
 
+    fun isLowRamDevice(): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return false
+        val memInfo = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+        return am.isLowRamDevice || memInfo.totalMem <= 3L * 1024 * 1024 * 1024
+    }
+
     val modelsDir: File
         get() = File(context.filesDir, "whisper_models").apply { mkdirs() }
 
