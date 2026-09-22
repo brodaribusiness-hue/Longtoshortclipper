@@ -1,13 +1,12 @@
 package com.shortsclipper
 
-import androidx.test.core.app.ActivityScenario
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.espresso.Espresso.onView
-import androidx.test.espresso.assertion.ViewAssertions.matches
-import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
-import androidx.test.espresso.matcher.ViewMatchers.withText
 import com.shortsclipper.ai.WhisperNative
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -20,14 +19,14 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class DeviceSmokeTest {
 
+    @get:Rule
+    val composeRule = createAndroidComposeRule<MainActivity>()
+
     @Test
     fun appLaunchesToTheOfflineImportScreen() {
-        val scenario = ActivityScenario.launch(MainActivity::class.java)
-        try {
-            onView(withText("Import Long Video")).check(matches(isDisplayed()))
-        } finally {
-            scenario.close()
-        }
+        // Compose content does not create Android TextView instances, so use
+        // Compose semantics rather than Espresso's View matchers.
+        composeRule.onNodeWithText("Import Long Video").assertIsDisplayed()
     }
 
     @Test
