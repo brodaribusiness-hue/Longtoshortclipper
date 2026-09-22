@@ -22,6 +22,28 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
+ * Drops target-rate samples that overlap data already written for an earlier
+ * decoder output buffer. It preserves streaming behavior: samples are never
+ * collected solely to trim a timestamp overlap.
+ */
+internal class TargetTimelineOverlapTrimmer(overlapSamples: Long) {
+    private var remainingSamples = overlapSamples.coerceAtLeast(0L)
+
+    fun emit(sample: Float, consumer: (Float) -> Unit) {
+        if (remainingSamples > 0L) {
+            remainingSamples--
+        } else {
+            consumer(sample)
+        }
+    }
+
+    companion object {
+        fun overlapSamples(writtenTargetSamples: Long, targetStartSample: Long): Long =
+            (writtenTargetSamples - targetStartSample).coerceAtLeast(0L)
+    }
+}
+
+/**
  * URI-based video access. Metadata and decoded media are streamed; a long
  * source is never loaded into memory as a whole.
  */
@@ -343,7 +365,10 @@ object VideoManager {
                                 if (firstDecodedUs == null) firstDecodedUs = presentationUs
                                 val relativePresentationUs = (presentationUs - requireNotNull(firstDecodedUs)).coerceAtLeast(0L)
                                 val targetStartSample = microsToTargetSamples(relativePresentationUs)
-                                val overlapSamples = writtenTargetSamples - targetStartSample
+                                val overlapSamples = TargetTimelineOverlapTrimmer.overlapSamples(
+                                    writtenTargetSamples = writtenTargetSamples,
+                                    targetStartSample = targetStartSample,
+                                )
                                 if (overlapSamples > maxOverlapSamples) {
                                     throw IllegalStateException("Audio decoder returned a discontinuous timestamp")
                                 }
@@ -352,13 +377,25 @@ object VideoManager {
 
                                 val outputBuffer = decoder.getOutputBuffer(outputIndex)
                                     ?: throw IllegalStateException("Audio decoder returned a null output buffer")
+                                // Decoder output timestamps identify the start
+                                // of each PCM buffer. Some codecs emit small
+                                // overlapping buffers; appending their entire
+                                // payload would duplicate audio and shift the
+                                // waveform/transcript timeline. Advance the
+                                // resampler through every source sample, but
+                                // drop only the already-written target samples.
+                                val overlapTrimmer = TargetTimelineOverlapTrimmer(overlapSamples)
                                 consumePcm(
                                     outputBuffer = outputBuffer,
                                     offset = bufferInfo.offset,
                                     size = bufferInfo.size,
                                     channels = sourceChannels,
                                     pcmEncoding = pcmEncoding,
-                                    onMonoSample = { mono -> resampler.push(mono, ::writeResampled) },
+                                    onMonoSample = { mono ->
+                                        resampler.push(mono) { resampled ->
+                                            overlapTrimmer.emit(resampled, ::writeResampled)
+                                        }
+                                    },
                                 )
                                 decodedUs = max(decodedUs, presentationUs)
                                 if (durationUs > 0L) onProgress((decodedUs.toFloat() / durationUs).coerceIn(0f, 1f))

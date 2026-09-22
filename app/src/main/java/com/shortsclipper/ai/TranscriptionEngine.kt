@@ -33,6 +33,10 @@ class TranscriptionEngine {
         private const val OVERLAP_SECONDS = 1.5
         private const val MAX_THREADS = 4
         private const val NO_HANDLE = 0L
+
+        /** Keep native work within the actual CPU count, including single-core devices. */
+        internal fun threadCountFor(availableProcessors: Int): Int =
+            availableProcessors.coerceIn(1, MAX_THREADS)
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -80,7 +84,7 @@ class TranscriptionEngine {
         }
         activeHandle.set(handle)
         try {
-            val threads = min(Runtime.getRuntime().availableProcessors(), MAX_THREADS).coerceAtLeast(2)
+            val threads = threadCountFor(Runtime.getRuntime().availableProcessors())
             val windowSamples = WINDOW_SECONDS * SAMPLE_RATE
             val overlapSamples = (OVERLAP_SECONDS * SAMPLE_RATE).toInt()
             val hopSamples = windowSamples - overlapSamples

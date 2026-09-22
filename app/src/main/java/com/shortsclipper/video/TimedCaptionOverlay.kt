@@ -25,16 +25,20 @@ import com.shortsclipper.model.Segment
 internal class TimedCaptionOverlay(
     segments: List<Segment>,
     private val sourceSegmentStartMs: Long,
+    private val sourceSegmentEndMs: Long,
 ) : TextOverlay() {
 
     private data class Caption(val startMs: Long, val endMs: Long, val text: SpannableString)
 
-    private val captions = segments
-        .asSequence()
-        .filter { it.endTimeMs > it.startTimeMs && it.text.isNotBlank() }
-        .sortedBy { it.startTimeMs }
-        .map { segment -> Caption(segment.startTimeMs, segment.endTimeMs, styledCaption(segment.text)) }
-        .toList()
+    // Each EditedMediaItem represents one source interval. Do not allocate
+    // styled text for an entire long-form transcript once per output clip.
+    private val captions = captionSegmentsForSourceRange(
+        segments = segments,
+        sourceStartMs = sourceSegmentStartMs,
+        sourceEndMs = sourceSegmentEndMs,
+    ).map { segment ->
+        Caption(segment.startTimeMs, segment.endTimeMs, styledCaption(segment.text))
+    }
     private val blank = SpannableString(" ")
     private val visibleSettings = OverlaySettings.Builder()
         // Bottom-center in NDC. The overlay's top-center attaches here so text

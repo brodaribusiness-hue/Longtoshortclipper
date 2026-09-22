@@ -75,23 +75,35 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null || activeOperationId != null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        val displayName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
-        } ?: "imported-model.bin"
+        val selectedUri = uri
         val signal = AtomicBoolean(false)
         cancelSignal = signal
         activeOperationId = "import"
-        activeLabel = "Importing $displayName"
+        activeLabel = "Preparing model import"
         progressFlow.value = 0f
         error = null
         activeJob = scope.launch {
             try {
+                // SAF providers are allowed to perform IPC/disk work for both
+                // permission and display-name lookups. Keep that work outside
+                // the ActivityResult callback and Compose main dispatcher.
+                val displayName = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            selectedUri,
+                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
+                    runCatching {
+                        context.contentResolver.query(selectedUri, null, null, null, null)?.use { cursor ->
+                            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+                        }
+                    }.getOrNull() ?: "imported-model.bin"
+                }
+                activeLabel = "Importing $displayName"
                 val imported = viewModel.modelManager.importFromFile(
-                    uri = uri,
+                    uri = selectedUri,
                     displayName = displayName,
                     onProgress = { bytes -> progressFlow.value = (bytes / (1024f * 1024f)).coerceAtLeast(0f) },
                     isCancelled = { signal.get() },
@@ -141,15 +153,24 @@ fun ModelManagerCard(viewModel: EditorViewModel, modifier: Modifier = Modifier) 
                             onUse = { viewModel.preferredModel.value = model },
                             onDelete = {
                                 scope.launch {
-                                    if (preferred.id == model.id) {
-                                        val fallback = withContext(Dispatchers.IO) {
-                                            viewModel.modelManager.availableModels()
-                                                .firstOrNull { it.id != model.id && viewModel.modelManager.isInstalled(it) }
+                                    try {
+                                        val deleted = viewModel.modelManager.delete(model)
+                                        if (!deleted) {
+                                            error = "Could not delete ${model.label}. Check available storage and try again."
+                                            return@launch
                                         }
-                                        viewModel.preferredModel.value = fallback ?: ModelManager.CATALOG[1]
+                                        if (viewModel.preferredModel.value.id == model.id) {
+                                            val fallback = withContext(Dispatchers.IO) {
+                                                viewModel.modelManager.availableModels()
+                                                    .firstOrNull { it.id != model.id && viewModel.modelManager.isInstalled(it) }
+                                            }
+                                            viewModel.preferredModel.value = fallback ?: ModelManager.CATALOG[1]
+                                        }
+                                    } catch (t: Throwable) {
+                                        error = t.message ?: "Could not delete ${model.label}"
+                                    } finally {
+                                        refresh++
                                     }
-                                    viewModel.modelManager.delete(model)
-                                    refresh++
                                 }
                             },
                             onDownload = if (model.imported) null else {

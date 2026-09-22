@@ -218,7 +218,17 @@ class ExportManager(private val context: Context) {
                     add(matrix)
                     add(presentation)
                     if (captionSegments.isNotEmpty()) {
-                        add(OverlayEffect(ImmutableList.of(TimedCaptionOverlay(captionSegments, segment.startMs))))
+                        add(
+                            OverlayEffect(
+                                ImmutableList.of(
+                                    TimedCaptionOverlay(
+                                        segments = captionSegments,
+                                        sourceSegmentStartMs = segment.startMs,
+                                        sourceSegmentEndMs = segment.endMs,
+                                    ),
+                                ),
+                            ),
+                        )
                     }
                 }
                 EditedMediaItem.Builder(mediaItem)
@@ -244,7 +254,13 @@ class ExportManager(private val context: Context) {
             val completedFile = completion.await()
             if (isCancelled()) throw ExportCancelledException()
             withContext(Dispatchers.IO) {
-                validateCompletedOutput(completedFile, plan.segments.sumOf { it.durationMs })
+                validateCompletedOutput(
+                    file = completedFile,
+                    expectedDurationMs = plan.segments.sumOf { it.durationMs },
+                    expectedWidth = plan.outWidth,
+                    expectedHeight = plan.outHeight,
+                    requireAudioTrack = source.hasAudio,
+                )
             }
             onProgress(100)
             completedFile
@@ -263,18 +279,24 @@ class ExportManager(private val context: Context) {
         }
     }
 
-    /** Rejects zero-byte, partial or non-video files before Gallery insertion. */
-    private fun validateCompletedOutput(file: File, expectedDurationMs: Long? = null) {
+    /** Rejects zero-byte, partial or structurally wrong files before Gallery insertion. */
+    private fun validateCompletedOutput(
+        file: File,
+        expectedDurationMs: Long? = null,
+        expectedWidth: Int? = null,
+        expectedHeight: Int? = null,
+        requireAudioTrack: Boolean = false,
+    ) {
         if (!file.isFile || file.length() < 1_024L) {
             throw IOException("Exporter did not produce a complete video file")
         }
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(file.absolutePath)
-            val videoFormat = (0 until extractor.trackCount)
-                .map { extractor.getTrackFormat(it) }
-                .firstOrNull { it.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
-                ?: throw IOException("Exported file has no video track")
+            val formats = (0 until extractor.trackCount).map { extractor.getTrackFormat(it) }
+            val videoFormat = formats.firstOrNull {
+                it.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            } ?: throw IOException("Exported file has no video track")
             val durationUs = if (videoFormat.containsKey(MediaFormat.KEY_DURATION)) {
                 runCatching { videoFormat.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
             } else 0L
@@ -287,6 +309,27 @@ class ExportManager(private val context: Context) {
                 if (durationUs < minimumExpectedUs) {
                     throw IOException("Exported video duration is incomplete")
                 }
+            }
+
+            if (expectedWidth != null && expectedHeight != null) {
+                val encodedWidth = videoFormat.integerOrZero(MediaFormat.KEY_WIDTH)
+                val encodedHeight = videoFormat.integerOrZero(MediaFormat.KEY_HEIGHT)
+                val rotation = videoFormat.integerOrZero(MediaFormat.KEY_ROTATION).normalizedRotation()
+                val displayWidth = if (rotation == 90 || rotation == 270) encodedHeight else encodedWidth
+                val displayHeight = if (rotation == 90 || rotation == 270) encodedWidth else encodedHeight
+                if (displayWidth != expectedWidth || displayHeight != expectedHeight) {
+                    throw IOException(
+                        "Exported video dimensions are ${displayWidth}x${displayHeight}; " +
+                            "expected ${expectedWidth}x${expectedHeight}",
+                    )
+                }
+            }
+
+            val hasAudioTrack = formats.any { format ->
+                format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+            }
+            if (requireAudioTrack && !hasAudioTrack) {
+                throw IOException("Exported video is missing its audio track")
             }
         } finally {
             extractor.release()
@@ -412,6 +455,14 @@ class ExportManager(private val context: Context) {
             if (count < 0) break
             output.write(buffer, 0, count)
         }
+    }
+
+    private fun MediaFormat.integerOrZero(key: String): Int =
+        if (containsKey(key)) runCatching { getInteger(key) }.getOrDefault(0) else 0
+
+    private fun Int.normalizedRotation(): Int {
+        val normalized = ((this % 360) + 360) % 360
+        return if (normalized == 0 || normalized == 90 || normalized == 180 || normalized == 270) normalized else 0
     }
 
     private fun String.ensureMp4Name(): String = if (endsWith(".mp4", ignoreCase = true)) this else "$this.mp4"

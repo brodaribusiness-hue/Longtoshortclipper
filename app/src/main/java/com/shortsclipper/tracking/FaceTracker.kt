@@ -8,6 +8,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import com.google.mlkit.vision.common.InputImage
@@ -193,6 +194,13 @@ class FaceTracker(private val context: Context) {
                 ?: throw IllegalStateException("Video track has no MIME type")
             extractor.selectTrack(trackIndex)
             extractor.seekTo(startMs * 1_000L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            // This decoder renders into an ImageReader rather than a View.
+            // On Android Q+ the default for such a Surface may drop frames when
+            // it considers the consumer too slow. Tracking must receive every
+            // decoded frame in order so ML Kit's tracker IDs remain continuous.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 0)
+            }
 
             val handlerThread = HandlerThread("ShortsClipperFaceFrames").also { it.start() }
             callbackThread = handlerThread

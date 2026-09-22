@@ -282,7 +282,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importVideo(uri: Uri, displayName: String, onResult: (Boolean, String?) -> Unit) {
-        if (importJob?.isActive == true) {
+        // A cancelled MediaMetadataRetriever operation can still be unwinding
+        // on its worker thread after Job.isActive becomes false. Do not start a
+        // second import until that job has actually released its media handles.
+        if (importJob?.isCompleted == false) {
             onResult(false, "Another video is still being imported.")
             return
         }
@@ -486,7 +489,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         // based on the previous raw tracks, even while the old decoder drains.
         trackingPathGeneration.incrementAndGet()
         val runningPass = trackingJob
-        if (runningPass?.isActive == true) {
+        if (runningPass?.isCompleted == false) {
             // A new user request must wait for the old decoder/ML Kit frame to
             // release. Starting both passes concurrently wastes memory and can
             // leave the latest request silently ignored after cancellation.
@@ -811,7 +814,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun runAnalysis(onFinished: (String?) -> Unit = {}) {
         val s = _state.value
         val source = s.source ?: return
-        if (analysisJob?.isActive == true) return
+        // isActive turns false as soon as cancellation is requested, while
+        // MediaCodec/native Whisper may still own the previous run's resources.
+        // Serialise a restart until its cleanup has actually completed.
+        if (analysisJob?.isCompleted == false) return
         val projectSession = projectSessionGeneration.get()
         val runGeneration = analysisRunGeneration.incrementAndGet()
         fun isCurrentAnalysisRun(): Boolean =
@@ -1104,7 +1110,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun startExport(onDone: (String?) -> Unit = {}) {
         val exportSnapshot = _state.value
-        if (exportSnapshot.source == null || exportJob?.isActive == true) return
+        // A cancelling Transformer job can have isActive=false before its
+        // output and codec cleanup finish. Never overlap two export sessions.
+        if (exportSnapshot.source == null || exportJob?.isCompleted == false) return
         val projectSession = projectSessionGeneration.get()
         val runGeneration = exportRunGeneration.incrementAndGet()
         exportCancelled.set(false)

@@ -13,6 +13,12 @@ class TranscriptionTest {
     private fun token(text: String, s: Long, e: Long, p: Float = 0.9f) = WordAssembler.Token(text, s, e, p)
 
     @Test
+    fun `native worker count respects a single core device and maximum cap`() {
+        assertEquals(1, TranscriptionEngine.threadCountFor(1))
+        assertEquals(4, TranscriptionEngine.threadCountFor(16))
+    }
+
+    @Test
     fun `tokens group into words on space prefix`() {
         val tokens = listOf(
             token("▁This", 0, 200),
