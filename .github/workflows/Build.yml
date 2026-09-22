@@ -79,7 +79,15 @@ jobs:
         if: failure()
         run: |
           set +e
-          error_lines=$(grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:|^> Task .* FAILED" build_output.log 2>/dev/null | tail -100)
+          error_lines=$(
+            {
+              grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:|^> Task .* FAILED" build_output.log 2>/dev/null
+              # Connected-test failures are stored as JUnit XML rather than in
+              # Gradle's concise exception, so include their exact message too.
+              find app/build/outputs/androidTest-results app/build/test-results \
+                -type f -name '*.xml' -exec grep -aH -E '<(failure|error)( |>)' {} + 2>/dev/null
+            } | tail -100
+          )
           {
             echo "## Android verification diagnostics"
             if [ -n "$error_lines" ]; then
