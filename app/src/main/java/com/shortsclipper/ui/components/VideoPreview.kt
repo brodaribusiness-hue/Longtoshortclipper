@@ -8,14 +8,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,8 +19,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -81,7 +75,6 @@ fun VideoPreview(
     val state by viewModel.state.collectAsState()
     val playhead by viewModel.playheadMs.collectAsState()
     val boxes by viewModel.faceSelectionBoxes.collectAsState()
-    val captionSegments = remember(state.transcript, state.captionEdits) { state.resolvedCaptionSegments() }
     val source = state.source ?: return
 
     BoxWithConstraints(
@@ -143,9 +136,6 @@ fun VideoPreview(
                             },
                         )
                     }
-                    // Kept above source-guide shading so readable captions are
-                    // never dimmed simply because they fall outside the crop.
-                    CaptionPreview(captionSegments, state.captionsEnabled, playhead, Modifier.align(Alignment.BottomCenter))
                 }
             }
 
@@ -200,7 +190,6 @@ fun VideoPreview(
                                 translationY = transform.translationYPx
                             },
                     )
-                    CaptionPreview(captionSegments, state.captionsEnabled, playhead, Modifier.align(Alignment.BottomCenter))
                 }
             }
         }
@@ -222,40 +211,6 @@ private fun PlayerSurface(viewModel: EditorViewModel, modifier: Modifier) {
         },
         update = { it.player = viewModel.player },
         modifier = modifier,
-    )
-}
-
-@Composable
-private fun CaptionPreview(
-    captions: List<com.shortsclipper.model.Segment>,
-    enabled: Boolean,
-    timeMs: Long,
-    modifier: Modifier = Modifier,
-) {
-    if (!enabled || captions.isEmpty()) return
-    var low = 0
-    var high = captions.lastIndex
-    while (low <= high) {
-        val middle = (low + high) ushr 1
-        if (captions[middle].startTimeMs <= timeMs) low = middle + 1 else high = middle - 1
-    }
-    val caption = captions.getOrNull(high)
-        ?.takeIf { timeMs < it.endTimeMs }
-        ?.text
-        ?.trim()
-        .orEmpty()
-    if (caption.isBlank()) return
-    Text(
-        text = caption,
-        color = Color.White,
-        fontSize = 15.sp,
-        fontWeight = FontWeight.Bold,
-        maxLines = 2,
-        modifier = modifier
-            .fillMaxWidth(0.86f)
-            .padding(bottom = 14.dp)
-            .background(Color.Black.copy(alpha = 0.68f), RoundedCornerShape(7.dp))
-            .padding(horizontal = 8.dp, vertical = 5.dp),
     )
 }
 

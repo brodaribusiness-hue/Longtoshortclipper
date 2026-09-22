@@ -16,8 +16,6 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.shortsclipper.ui.AnalysisScreen
-import com.shortsclipper.ui.ClipsScreen
 import com.shortsclipper.ui.EditorScreen
 import com.shortsclipper.ui.EditorViewModel
 import com.shortsclipper.ui.ExportScreen
@@ -28,8 +26,6 @@ import com.shortsclipper.ui.theme.ShortsClipperTheme
 sealed interface Screen {
     data object Home : Screen
     data object Editor : Screen
-    data object Analysis : Screen
-    data object Clips : Screen
     data object Export : Screen
 }
 
@@ -62,14 +58,9 @@ fun AppRoot(viewModel: EditorViewModel = viewModel()) {
     fun back() {
         if (nav.size > 1) nav.removeAt(nav.lastIndex)
     }
-    fun returnToEditor() {
-        while (nav.size > 1 && nav.last() != Screen.Editor) nav.removeAt(nav.lastIndex)
-    }
-
     BackHandler(enabled = nav.size > 1) {
         when (nav.last()) {
             Screen.Editor -> viewModel.onEditorBackgrounded()
-            Screen.Analysis -> viewModel.cancelAnalysis()
             Screen.Export -> viewModel.cancelExport()
             else -> Unit
         }
@@ -83,21 +74,8 @@ fun AppRoot(viewModel: EditorViewModel = viewModel()) {
         )
         Screen.Editor -> EditorScreen(
             viewModel = viewModel,
-            onOpenAnalysis = { viewModel.onEditorBackgrounded(); go(Screen.Analysis) },
-            onOpenClips = { viewModel.onEditorBackgrounded(); go(Screen.Clips) },
             onOpenExport = { viewModel.onEditorBackgrounded(); go(Screen.Export) },
             onClose = { viewModel.onEditorBackgrounded(); back() },
-        )
-        Screen.Analysis -> AnalysisScreen(
-            viewModel = viewModel,
-            onOpenClips = { go(Screen.Clips) },
-            onClose = { viewModel.cancelAnalysis(); back() },
-        )
-        Screen.Clips -> ClipsScreen(
-            viewModel = viewModel,
-            onOpenAnalysis = { returnToEditor(); go(Screen.Analysis) },
-            onReturnToEditor = { returnToEditor() },
-            onClose = { back() },
         )
         Screen.Export -> ExportScreen(
             viewModel = viewModel,

@@ -131,11 +131,6 @@ data class ProjectState(
     val source: VideoSource? = null,
     val timeline: TimelineState = TimelineState(),
     val tracking: TrackingState = TrackingState(),
-    val transcript: Transcript? = null,
-    /** Burn timed local transcript captions into the 9:16 export when available. */
-    val captionsEnabled: Boolean = true,
-    /** User corrections keyed to stable transcript segment time bounds. */
-    val captionEdits: List<CaptionEdit> = emptyList(),
     /** Downsampled audio loudness (RMS) used for waveform + silence detection. */
     val audioEnvelope: List<Float> = emptyList(),
     /** Source-video timestamp of the first decoded PCM sample. */
@@ -145,12 +140,6 @@ data class ProjectState(
     val detectedSilences: List<SilenceEdit> = emptyList(),
     /** Applied silence removals inside the selected clip. */
     val silenceRemovals: List<SilenceEdit> = emptyList(),
-    val candidates: List<ClipCandidate> = emptyList(),
-    val rejectedCandidateIds: Set<String> = emptySet(),
-    val selectedCandidateId: String? = null,
-    /** "auto" or a Whisper language code selected in the analysis UI. */
-    val transcriptionLanguage: String = "auto",
-    val targetDuration: TargetDuration = TargetDuration.T30,
     val exportQuality: QualityMode = QualityMode.HIGH_QUALITY,
 ) {
     /** Segments that will actually be exported/previewed for the current clip. */
@@ -158,17 +147,6 @@ data class ProjectState(
         get() = ExportPlanner.buildSegments(timeline.selectionStartMs, timeline.selectionEndMs, silenceRemovals)
 
     val editedDurationMs: Long get() = exportSegments.sumOf { it.durationMs }
-
-    val visibleCandidates: List<ClipCandidate>
-        get() = candidates.filter { it.id !in rejectedCandidateIds }
-
-    /** Timed caption text after applying local user edits to Whisper segments. */
-    fun resolvedCaptionSegments(): List<Segment> {
-        val edits = captionEdits.associateBy { it.startTimeMs to it.endTimeMs }
-        return transcript?.segments.orEmpty().map { segment ->
-            edits[segment.startTimeMs to segment.endTimeMs]?.let { edit -> segment.copy(text = edit.text) } ?: segment
-        }
-    }
 
     fun sourceAt(segmentTimeMs: Long): Long {
         var remaining = segmentTimeMs.coerceAtLeast(0L)

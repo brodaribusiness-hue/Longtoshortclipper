@@ -6,8 +6,6 @@
 /build
 /app/build
 /captures
-.externalNativeBuild
-.cxx
 *.apk
 *.aab
 *.keystore

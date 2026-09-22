@@ -27,28 +27,3 @@ data class ExportState(
     val isBusy: Boolean
         get() = phase == ExportPhase.PREPARING || phase == ExportPhase.TRANSFORMING || phase == ExportPhase.SAVING
 }
-
-enum class AnalysisPhase { IDLE, RUNNING, DONE, FAILED }
-
-enum class AnalysisStep(val label: String) {
-    PREPARE_AUDIO("Preparing audio"),
-    TRANSCRIBE("Transcribing"),
-    WORD_TIMESTAMPS("Generating word timestamps"),
-    ANALYZE_CONTENT("Analyzing content"),
-    FIND_MOMENTS("Finding candidate moments"),
-    SCORE("Scoring candidates"),
-    GENERATE("Generating clips"),
-}
-
-enum class StepState { PENDING, RUNNING, DONE, FAILED }
-
-/** Runtime AI-analysis pipeline progress state. */
-data class AnalysisState(
-    val phase: AnalysisPhase = AnalysisPhase.IDLE,
-    val stepStates: Map<AnalysisStep, StepState> = emptyMap(),
-    val stepProgress: Map<AnalysisStep, Float> = emptyMap(),
-    val activeStep: AnalysisStep? = null,
-    val error: String? = null,
-) {
-    val isRunning: Boolean get() = phase == AnalysisPhase.RUNNING
-}

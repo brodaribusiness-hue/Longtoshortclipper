@@ -8,14 +8,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import com.shortsclipper.ai.ClipGenerator
-import com.shortsclipper.ai.ModelManager
 import com.shortsclipper.ai.SilenceDetector
-import com.shortsclipper.ai.TranscriptionEngine
 import com.shortsclipper.data.ProjectRepository
-import com.shortsclipper.model.AnalysisPhase
-import com.shortsclipper.model.AnalysisState
-import com.shortsclipper.model.AnalysisStep
 import com.shortsclipper.model.ExportPhase
 import com.shortsclipper.model.ExportPlanner
 import com.shortsclipper.model.ExportState
@@ -24,8 +18,6 @@ import com.shortsclipper.model.FacePoint
 import com.shortsclipper.model.ProjectState
 import com.shortsclipper.model.SilenceEdit
 import com.shortsclipper.model.SmoothingPreset
-import com.shortsclipper.model.StepState
-import com.shortsclipper.model.TargetDuration
 import com.shortsclipper.model.TransformKeyframe
 import com.shortsclipper.tracking.FaceTracker
 import com.shortsclipper.tracking.TrackingEngine
@@ -54,8 +46,6 @@ import java.util.concurrent.atomic.AtomicLong
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
     val repository = ProjectRepository(File(application.filesDir, "data"))
-    val modelManager = ModelManager(application)
-    private val transcriptionEngine = TranscriptionEngine()
     private val exportManager = ExportManager(application)
     private val faceTracker = FaceTracker(application)
 
@@ -74,7 +64,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val projectOpenGeneration = AtomicLong(0L)
     /** Invalidates callbacks from jobs that belonged to a replaced project. */
     private val projectSessionGeneration = AtomicLong(0L)
-    private val candidateGeneration = AtomicLong(0L)
 
     // Transient playback state (not part of undo history).
     val playheadMs = MutableStateFlow(0L)
@@ -82,7 +71,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     val playbackError = MutableStateFlow<String?>(null)
     val previewSkipSilences = MutableStateFlow(false)
 
-    val analysisState = MutableStateFlow(AnalysisState())
+    val isPreparingAudio = MutableStateFlow(false)
+    val audioPreparationError = MutableStateFlow<String?>(null)
     val exportState = MutableStateFlow(ExportState())
     val trackingPassProgress = MutableStateFlow(-1f)
 
@@ -106,25 +96,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     var player: ExoPlayer? = null
         private set
 
-    private var pcmFile: File? = null
     private var importJob: Job? = null
-    private var analysisJob: Job? = null
+    private var audioPreparationJob: Job? = null
     private var exportJob: Job? = null
     private var trackingJob: Job? = null
     /** Serializes a rapid cancel/restart so two decoder passes never overlap. */
     private var trackingRestartJob: Job? = null
     private var autosaveJob: Job? = null
-    private val analysisCancelled = AtomicBoolean(false)
+    private val audioPreparationCancelled = AtomicBoolean(false)
     private val exportCancelled = AtomicBoolean(false)
     private val trackingCancelled = AtomicBoolean(false)
     /** Invalidates worker smoothing/selection calculations when their raw path changes. */
     private val trackingPathGeneration = AtomicLong(0L)
-    /** Keeps stale analysis/export/tracking callbacks out of a newer UI session. */
-    private val analysisRunGeneration = AtomicLong(0L)
+    /** Keeps stale audio/export/tracking callbacks out of a newer UI session. */
+    private val audioPreparationGeneration = AtomicLong(0L)
     private val exportRunGeneration = AtomicLong(0L)
     private val trackingPassGeneration = AtomicLong(0L)
-
-    val preferredModel = MutableStateFlow(ModelManager.CATALOG[1]) // base
 
     init {
         synchronized(history) { history.push(_state.value) }
@@ -136,7 +123,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     /**
      * Worker jobs keep their own immutable input snapshots. Do not let an old
-     * decoder/transcriber/export callback overwrite runtime state after the
+     * decoder/audio-preparation/export callback overwrite runtime state after the
      * user opened, imported, or deleted a different project.
      */
     private fun isCurrentProjectSession(session: Long, snapshot: ProjectState): Boolean {
@@ -206,14 +193,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun stopProjectWork() {
         // Invalidate state/progress callbacks before asking workers to stop.
-        // MediaCodec, ML Kit and native Whisper can finish a callback after a
-        // coroutine has been cancelled, especially during project replacement.
-        analysisRunGeneration.incrementAndGet()
+        // MediaCodec and ML Kit can finish a callback after a coroutine has
+        // been cancelled, especially during project replacement.
+        audioPreparationGeneration.incrementAndGet()
         trackingPassGeneration.incrementAndGet()
         exportRunGeneration.incrementAndGet()
-        analysisCancelled.set(true)
-        transcriptionEngine.cancel()
-        analysisJob?.cancel()
+        audioPreparationCancelled.set(true)
+        audioPreparationJob?.cancel()
+        isPreparingAudio.value = false
+        audioPreparationError.value = null
         trackingCancelled.set(true)
         trackingRestartJob?.cancel()
         trackingRestartJob = null
@@ -226,8 +214,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         rawTracks = emptyList()
         faceSelectionBoxes.value = emptyList()
         lastFaceBoxTimeMs = Long.MIN_VALUE
-        pcmFile?.delete()
-        pcmFile = null
     }
 
     private fun replaceProject(project: ProjectState) {
@@ -244,7 +230,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
         playheadMs.value = project.timeline.selectionStartMs
         previewSkipSilences.value = false
-        analysisState.value = AnalysisState()
         exportState.value = ExportState()
         playbackError.value = null
         if (project.source == null) {
@@ -443,7 +428,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             current.copy(
                 timeline = current.timeline.copy(selectionStartMs = start, selectionEndMs = end),
                 tracking = clearedTracking,
-                selectedCandidateId = if (selectionChanged) null else current.selectedCandidateId,
             )
         }, tag, coalesceMs)
         if (selectionChanged) cancelFaceDetectionPass()
@@ -782,230 +766,73 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         commit({ it.copy(tracking = it.tracking.copy(manualKeyframes = emptyList())) })
     }
 
-    // ------------------------------------------------------------- captions
+    // ------------------------------------------------------- silence audio
 
-    fun setCaptionsEnabled(enabled: Boolean) {
-        commit({ it.copy(captionsEnabled = enabled) }, tag = "captions")
-    }
-
-    fun updateCaption(segmentStartMs: Long, segmentEndMs: Long, text: String) {
-        val original = _state.value.transcript?.segments?.firstOrNull {
-            it.startTimeMs == segmentStartMs && it.endTimeMs == segmentEndMs
-        } ?: return
-        val cleaned = text.replace(Regex("\\s+"), " ").trim().take(240)
-        commit({ current ->
-            val existing = current.captionEdits.filterNot {
-                it.startTimeMs == segmentStartMs && it.endTimeMs == segmentEndMs
-            }
-            val edits = if (cleaned == original.text.trim()) existing else {
-                existing + com.shortsclipper.model.CaptionEdit(segmentStartMs, segmentEndMs, cleaned)
-            }
-            current.copy(captionEdits = edits.sortedBy { it.startTimeMs })
-        }, tag = "caption", coalesceMs = 700L)
-    }
-
-    // ------------------------------------------------------------- analysis
-
-    fun setTranscriptionLanguage(language: String) {
-        val normalized = language.trim().lowercase().takeIf { it.matches(Regex("[a-z]{2,3}")) } ?: "auto"
-        commit({ it.copy(transcriptionLanguage = normalized) }, tag = "language")
-    }
-
-    fun runAnalysis(onFinished: (String?) -> Unit = {}) {
-        val s = _state.value
-        val source = s.source ?: return
-        // isActive turns false as soon as cancellation is requested, while
-        // MediaCodec/native Whisper may still own the previous run's resources.
-        // Serialise a restart until its cleanup has actually completed.
-        if (analysisJob?.isCompleted == false) return
+    /** Prepares the bounded local audio envelope used by the retained silence editor. */
+    fun prepareAudioForSilence() {
+        val snapshot = _state.value
+        val source = snapshot.source ?: return
+        // An extractor/decoder can still be releasing its handles after its
+        // coroutine has been cancelled. Keep one preparation pass at a time.
+        if (audioPreparationJob?.isCompleted == false) return
         val projectSession = projectSessionGeneration.get()
-        val runGeneration = analysisRunGeneration.incrementAndGet()
-        fun isCurrentAnalysisRun(): Boolean =
-            runGeneration == analysisRunGeneration.get() && isCurrentProjectSession(projectSession, s)
-        fun finish(message: String?) {
-            if (isCurrentAnalysisRun()) runCatching { onFinished(message) }
-        }
-        analysisCancelled.set(false)
+        val runGeneration = audioPreparationGeneration.incrementAndGet()
+        audioPreparationCancelled.set(false)
+        audioPreparationError.value = null
+        isPreparingAudio.value = true
+        audioPreparationJob = viewModelScope.launch {
+            var pcmFile: File? = null
 
-        fun step(step: AnalysisStep, state: StepState, progress: Float? = null, message: String? = null) {
-            if (!isCurrentAnalysisRun()) return
-            analysisState.value = analysisState.value.copy(
-                phase = if (state == StepState.FAILED) AnalysisPhase.FAILED else AnalysisPhase.RUNNING,
-                stepStates = analysisState.value.stepStates + (step to state),
-                stepProgress = if (progress != null) analysisState.value.stepProgress + (step to progress) else analysisState.value.stepProgress,
-                activeStep = if (state == StepState.RUNNING) step else analysisState.value.activeStep,
-                error = message ?: analysisState.value.error,
-            )
-        }
+            fun isCurrentAudioPreparation(): Boolean =
+                runGeneration == audioPreparationGeneration.get() &&
+                    !audioPreparationCancelled.get() &&
+                    isCurrentProjectSession(projectSession, snapshot)
 
-        fun resetAll() {
-            if (!isCurrentAnalysisRun()) return
-            analysisState.value = AnalysisState(
-                phase = AnalysisPhase.RUNNING,
-                stepStates = AnalysisStep.entries.associateWith { StepState.PENDING },
-                stepProgress = emptyMap(),
-                activeStep = null,
-                error = null,
-            )
-        }
-
-        analysisJob = viewModelScope.launch {
-            var runPcmFile: File? = null
             try {
-                resetAll()
-                if (!isCurrentAnalysisRun()) return@launch
-
-                // 1. Prepare audio (decode + envelope).
-                step(AnalysisStep.PREPARE_AUDIO, StepState.RUNNING)
-                pcmFile?.delete()
-                pcmFile = null
-                val decoded = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val decoded = withContext(Dispatchers.IO) {
                     VideoManager.decodeAudio16kMono(
-                        getApplication(),
-                        Uri.parse(source.uri),
-                        onProgress = { step(AnalysisStep.PREPARE_AUDIO, StepState.RUNNING, it) },
-                        isCancelled = { analysisCancelled.get() },
+                        context = getApplication(),
+                        uri = Uri.parse(source.uri),
+                        isCancelled = { !isCurrentAudioPreparation() },
                     )
                 }
-                if (analysisCancelled.get() || !isCurrentAnalysisRun()) throw InterruptedException()
+                // Keep ownership before checking the generation. A completed
+                // decoder can return just as cancellation arrives; finally
+                // must still remove its temporary PCM file in that race.
+                pcmFile = decoded?.pcmFile
+                if (!isCurrentAudioPreparation()) throw CancellationException("Audio preparation cancelled")
                 if (decoded == null) {
-                    // No audio track: transcription impossible, manual editing still works.
-                    step(AnalysisStep.PREPARE_AUDIO, StepState.DONE)
-                    step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "This video has no audio track, so transcription and AI clip suggestions are unavailable. Manual clipping, reframing and tracking still work.")
-                    if (isCurrentAnalysisRun()) {
-                        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE)
-                    }
-                    finish("This video has no audio track - AI analysis needs audio.")
+                    audioPreparationError.value = "This video has no audio track, so silence detection is unavailable."
                     return@launch
                 }
-                runPcmFile = decoded.pcmFile
-                pcmFile = runPcmFile
-                if (!isCurrentAnalysisRun()) throw InterruptedException()
-                commit({
+                commit {
                     it.copy(
                         audioEnvelope = decoded.envelope,
                         audioStartMs = decoded.startTimeMs,
                         envelopeStepMs = SilenceDetector.STEP_MS,
                     )
-                })
-                step(AnalysisStep.PREPARE_AUDIO, StepState.DONE, 1f)
-
-                // 2. Transcribe (local whisper.cpp) + 3. word timestamps.
-                step(AnalysisStep.TRANSCRIBE, StepState.RUNNING)
-                val selectedModel = preferredModel.value
-                val modelInstalled = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    modelManager.isInstalled(selectedModel)
-                }
-                if (!isCurrentAnalysisRun()) throw InterruptedException()
-                if (!modelInstalled) {
-                    step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "No transcription model installed. Open Model Manager on the home screen and download one (one-time, ~${selectedModel.approxSizeMB} MB).")
-                    if (isCurrentAnalysisRun()) {
-                        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
-                    }
-                    finish("No transcription model installed")
-                    return@launch
-                }
-                // Structural + checksum validation happens immediately before
-                // JNI model loading, so a stale/corrupt on-disk file is never
-                // handed to whisper.cpp merely because it looked installed.
-                val modelFile = modelManager.validatedModelFile(
-                    selectedModel,
-                    isCancelled = { analysisCancelled.get() || !isCurrentAnalysisRun() },
-                )
-                val transcript = transcriptionEngine.transcribe(
-                    pcmFile = decoded.pcmFile,
-                    modelFile = modelFile,
-                    language = s.transcriptionLanguage,
-                    sourceStartMs = decoded.startTimeMs,
-                    sourceEndMs = source.durationMs,
-                    onProgress = { p ->
-                        step(AnalysisStep.TRANSCRIBE, StepState.RUNNING, p)
-                    },
-                    isCancelled = { analysisCancelled.get() || !isCurrentAnalysisRun() },
-                )
-                if (analysisCancelled.get() || !isCurrentAnalysisRun()) throw InterruptedException()
-                step(AnalysisStep.TRANSCRIBE, StepState.DONE, 1f)
-
-                if (transcript.words.isEmpty()) {
-                    step(AnalysisStep.WORD_TIMESTAMPS, StepState.FAILED, message = "No speech was detected in this video.")
-                    if (isCurrentAnalysisRun()) {
-                        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
-                    }
-                    finish("No speech detected")
-                    return@launch
-                }
-                step(AnalysisStep.WORD_TIMESTAMPS, StepState.DONE, 1f)
-
-                // 4-7. Local content analysis -> moments -> scoring -> candidates.
-                step(AnalysisStep.ANALYZE_CONTENT, StepState.RUNNING)
-                val sentences = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    ClipGenerator.prepareSentences(transcript, source.durationMs)
-                }
-                step(AnalysisStep.ANALYZE_CONTENT, StepState.DONE, 1f)
-
-                step(AnalysisStep.FIND_MOMENTS, StepState.RUNNING)
-                val anchors = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    com.shortsclipper.ai.HighlightAnalyzer.findAnchors(sentences)
-                }
-                step(AnalysisStep.FIND_MOMENTS, StepState.DONE, 1f)
-
-                step(AnalysisStep.SCORE, StepState.RUNNING)
-                val candidates = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    ClipGenerator.generate(sentences, anchors, source.durationMs, s.targetDuration)
-                }
-                step(AnalysisStep.SCORE, StepState.DONE, 1f)
-                if (!isCurrentAnalysisRun()) throw InterruptedException()
-
-                step(AnalysisStep.GENERATE, StepState.RUNNING)
-                commit({
-                    it.copy(
-                        transcript = transcript,
-                        captionEdits = emptyList(),
-                        candidates = candidates,
-                        rejectedCandidateIds = emptySet(),
-                    )
-                })
-                step(AnalysisStep.GENERATE, StepState.DONE, 1f)
-                if (isCurrentAnalysisRun()) {
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE, activeStep = null)
-                }
-                finish(if (candidates.isEmpty()) "No strong candidate moments found - adjust the clip manually." else null)
-            } catch (_: InterruptedException) {
-                if (isCurrentAnalysisRun()) {
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
                 }
             } catch (_: CancellationException) {
-                if (isCurrentAnalysisRun()) {
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
-                }
+                // Cancellation is expected when the source/project changes.
             } catch (t: Throwable) {
-                if (isCurrentAnalysisRun()) {
-                    val msg = t.message ?: "Analysis failed"
-                    analysisState.value = analysisState.value.copy(
-                        phase = AnalysisPhase.FAILED,
-                        error = msg,
-                        activeStep = null,
-                    )
-                    finish(msg)
+                if (isCurrentAudioPreparation()) {
+                    audioPreparationError.value = "Could not analyze audio: ${t.message ?: "unsupported audio"}"
                 }
             } finally {
-                // The envelope is persisted in ProjectState; retaining decoded
-                // PCM after analysis only wastes private app storage.
-                val file = runPcmFile
-                if (file != null && pcmFile == file) {
-                    pcmFile = null
-                    file.delete()
+                pcmFile?.delete()
+                if (runGeneration == audioPreparationGeneration.get()) {
+                    isPreparingAudio.value = false
+                    audioPreparationJob = null
                 }
             }
         }
     }
 
-    fun cancelAnalysis() {
-        analysisRunGeneration.incrementAndGet()
-        analysisCancelled.set(true)
-        transcriptionEngine.cancel()
-        analysisJob?.cancel()
-        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
+    fun cancelAudioPreparation() {
+        audioPreparationGeneration.incrementAndGet()
+        audioPreparationCancelled.set(true)
+        audioPreparationJob?.cancel()
+        isPreparingAudio.value = false
     }
 
     // -------------------------------------------------------------- silences
@@ -1040,70 +867,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun clearSilenceRemoval() {
         commit({ it.copy(silenceRemovals = emptyList()) })
         previewSkipSilences.value = false
-    }
-
-    // ------------------------------------------------------------- candidates
-
-    fun setTargetDuration(target: TargetDuration) {
-        commit({ it.copy(targetDuration = target) })
-        regenerateCandidates()
-    }
-
-    fun regenerateCandidates() {
-        val snapshot = _state.value
-        val transcript = snapshot.transcript ?: return
-        val sourceDurationMs = snapshot.source?.durationMs ?: return
-        val generation = candidateGeneration.incrementAndGet()
-        viewModelScope.launch {
-            val candidates = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                ClipGenerator.generate(transcript, sourceDurationMs, snapshot.targetDuration)
-            }
-            // Slider/chip changes can queue several scoring runs. Only the
-            // latest request for the same transcript/project may commit.
-            val current = _state.value
-            if (generation != candidateGeneration.get() || current.id != snapshot.id ||
-                current.transcript !== transcript || current.targetDuration != snapshot.targetDuration
-            ) return@launch
-            commit({ it.copy(candidates = candidates, rejectedCandidateIds = emptySet()) })
-        }
-    }
-
-    fun selectCandidate(id: String) {
-        val candidate = _state.value.candidates.firstOrNull { it.id == id } ?: return
-        val selectionChanged = candidate.startMs != _state.value.timeline.selectionStartMs ||
-            candidate.endMs != _state.value.timeline.selectionEndMs
-        commit({ current ->
-            val tracking = if (selectionChanged) {
-                // Candidate selection is also a timeline edit. A path scanned
-                // for the previous range must not silently steer this clip.
-                current.tracking.copy(
-                    autoEnabled = false,
-                    targetFaceId = null,
-                    detectedFaces = emptyList(),
-                    autoPath = emptyList(),
-                )
-            } else {
-                current.tracking
-            }
-            current.copy(
-                selectedCandidateId = id,
-                timeline = current.timeline.copy(selectionStartMs = candidate.startMs, selectionEndMs = candidate.endMs),
-                silenceRemovals = emptyList(),
-                tracking = tracking,
-            )
-        })
-        if (selectionChanged) {
-            cancelFaceDetectionPass()
-            trackingError.value = null
-            rawTracks = emptyList()
-            lastFaceBoxTimeMs = Long.MIN_VALUE
-            faceSelectionBoxes.value = emptyList()
-        }
-        seekTo(candidate.startMs)
-    }
-
-    fun rejectCandidate(id: String) {
-        commit({ it.copy(rejectedCandidateIds = it.rejectedCandidateIds + id) })
     }
 
     // ---------------------------------------------------------------- export

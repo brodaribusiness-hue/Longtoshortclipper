@@ -28,7 +28,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -73,14 +72,12 @@ import com.shortsclipper.ui.theme.Warning
  * Main editor. Layout follows the specification:
  * close/export top bar, dominant 9:16 preview, transport + undo/redo,
  * auto face tracking toggle, timeline, and bottom actions
- * (Tracking/Reframe, Silence, AI Analysis, Potential Clips).
+ * (Tracking/Reframe and Silence).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
     viewModel: EditorViewModel,
-    onOpenAnalysis: () -> Unit,
-    onOpenClips: () -> Unit,
     onOpenExport: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -94,7 +91,6 @@ fun EditorScreen(
 
     var showTrackingSheet by remember { mutableStateOf(false) }
     var showSilenceSheet by remember { mutableStateOf(false) }
-    var showCaptionsSheet by remember { mutableStateOf(false) }
     var previewMode by remember { mutableStateOf(PreviewMode.SOURCE) }
 
     val source = state.source
@@ -302,23 +298,11 @@ fun EditorScreen(
 
         // ---- Bottom editing actions ---------------------------------------
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 7.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            EditorAction("Tracking / Reframe", Modifier.weight(1.25f)) { showTrackingSheet = true }
-            EditorAction("Captions", Modifier.weight(0.85f), highlighted = state.transcript != null) { showCaptionsSheet = true }
-            EditorAction("Silence", Modifier.weight(0.75f)) { showSilenceSheet = true }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            EditorAction("AI Analysis", Modifier.weight(1f)) { onOpenAnalysis() }
-            EditorAction(
-                "Clips${if (state.visibleCandidates.isNotEmpty()) " (${state.visibleCandidates.size})" else ""}",
-                Modifier.weight(1f),
-                highlighted = state.visibleCandidates.isNotEmpty(),
-            ) { onOpenClips() }
+            EditorAction("Tracking / Reframe", Modifier.weight(1f)) { showTrackingSheet = true }
+            EditorAction("Silence", Modifier.weight(1f)) { showSilenceSheet = true }
         }
         }
     }
@@ -333,21 +317,16 @@ fun EditorScreen(
             SilenceSheetContent(viewModel)
         }
     }
-    if (showCaptionsSheet) {
-        ModalBottomSheet(onDismissRequest = { showCaptionsSheet = false }, containerColor = BgSecondary) {
-            CaptionsSheetContent(viewModel)
-        }
-    }
 }
 
 @Composable
-private fun EditorAction(label: String, modifier: Modifier = Modifier, highlighted: Boolean = false, onClick: () -> Unit) {
+private fun EditorAction(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         modifier = modifier.height(44.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (highlighted) Accent else BgControl,
-            contentColor = if (highlighted) Color.Black else TextPrimary,
+            containerColor = BgControl,
+            contentColor = TextPrimary,
         ),
         shape = RoundedCornerShape(10.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
@@ -441,79 +420,18 @@ private fun TrackingSheetContent(viewModel: EditorViewModel) {
 }
 
 @Composable
-private fun CaptionsSheetContent(viewModel: EditorViewModel) {
-    val state by viewModel.state.collectAsState()
-    val selection = state.timeline
-    val captions = state.resolvedCaptionSegments()
-        .filter { it.endTimeMs > selection.selectionStartMs && it.startTimeMs < selection.selectionEndMs }
-
-    Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Text("Captions", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Text(
-            "Whisper transcript captions are previewed and burned into the 9:16 export. Edit a line to correct it; timing remains tied to local word timestamps.",
-            color = TextSecondary,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Include captions in export", color = TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
-            Switch(
-                checked = state.captionsEnabled,
-                onCheckedChange = viewModel::setCaptionsEnabled,
-                colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = Color.Black),
-            )
-        }
-        if (captions.isEmpty()) {
-            Text(
-                "No transcript captions are available for this selection. Run AI Analysis with a local Whisper model first.",
-                color = TextSecondary,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(vertical = 12.dp),
-            )
-        } else {
-            captions.forEach { caption ->
-                CaptionEditorRow(caption, viewModel)
-            }
-        }
-        Spacer(Modifier.height(18.dp))
-    }
-}
-
-@Composable
-private fun CaptionEditorRow(caption: com.shortsclipper.model.Segment, viewModel: EditorViewModel) {
-    var text by remember(caption.startTimeMs, caption.endTimeMs) { mutableStateOf(caption.text) }
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Text(
-            "${formatTime(caption.startTimeMs, true)} – ${formatTime(caption.endTimeMs, true)}",
-            color = Accent,
-            fontSize = 10.sp,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-        )
-        OutlinedTextField(
-            value = text,
-            onValueChange = {
-                text = it
-                viewModel.updateCaption(caption.startTimeMs, caption.endTimeMs, it)
-            },
-            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
-            textStyle = androidx.compose.ui.text.TextStyle(color = TextPrimary, fontSize = 13.sp),
-            minLines = 1,
-            maxLines = 3,
-        )
-    }
-}
-
-@Composable
 private fun SilenceSheetContent(viewModel: EditorViewModel) {
     val state by viewModel.state.collectAsState()
     var thresholdDb by remember(state.detectedSilences) { mutableStateOf(-38f) }
     var minSilenceMs by remember(state.detectedSilences) { mutableStateOf(600f) }
     val skipSilences by viewModel.previewSkipSilences.collectAsState()
+    val isPreparingAudio by viewModel.isPreparingAudio.collectAsState()
+    val audioPreparationError by viewModel.audioPreparationError.collectAsState()
 
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text("Silence detection & removal", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Detects unnecessary pauses from the audio envelope. Short natural pauses are kept by default. Removals never cut words: cuts happen inside silence windows only.",
+            "Detects unnecessary pauses from the local audio envelope. Short natural pauses are kept by default, and cuts stay inside detected quiet windows.",
             color = TextSecondary,
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
@@ -535,18 +453,45 @@ private fun SilenceSheetContent(viewModel: EditorViewModel) {
         )
 
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-            Button(
-                onClick = { viewModel.detectSilences(thresholdDb, minSilenceMs.toInt()) },
-                enabled = state.audioEnvelope.isNotEmpty(),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
-            ) {
-                Text("Detect silence", fontSize = 12.sp)
+            when {
+                isPreparingAudio -> {
+                    Button(
+                        onClick = viewModel::cancelAudioPreparation,
+                        colors = ButtonDefaults.buttonColors(containerColor = BgControl, contentColor = TextPrimary),
+                    ) {
+                        Text("Cancel audio analysis", fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("Analyzing local audio…", color = TextSecondary, fontSize = 11.sp)
+                }
+                state.audioEnvelope.isEmpty() -> {
+                    Button(
+                        onClick = viewModel::prepareAudioForSilence,
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
+                    ) {
+                        Text("Analyze audio", fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("Analyze the local audio track to enable silence detection", color = TextSecondary, fontSize = 11.sp)
+                }
+                else -> {
+                    Button(
+                        onClick = { viewModel.detectSilences(thresholdDb, minSilenceMs.toInt()) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
+                    ) {
+                        Text("Detect silence", fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("${state.detectedSilences.size} pauses detected", color = TextSecondary, fontSize = 11.sp)
+                }
             }
-            Spacer(Modifier.width(12.dp))
+        }
+        if (audioPreparationError != null) {
             Text(
-                if (state.audioEnvelope.isEmpty()) "Run AI Analysis first (audio envelope needed)" else "${state.detectedSilences.size} pauses detected",
-                color = TextSecondary,
+                audioPreparationError!!,
+                color = Error,
                 fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp),
             )
         }
 

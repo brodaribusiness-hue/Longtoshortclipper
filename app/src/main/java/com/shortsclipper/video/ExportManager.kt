@@ -18,7 +18,6 @@ import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.GlMatrixTransformation
-import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -42,7 +41,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import com.google.common.collect.ImmutableList
 import kotlin.math.roundToInt
 
 class ExportCancelledException : Exception("Export cancelled")
@@ -187,7 +185,6 @@ class ExportManager(private val context: Context) {
             .build()
 
         try {
-            val captionSegments = if (state.captionsEnabled) state.resolvedCaptionSegments() else emptyList()
             val presentation = Presentation.createForWidthAndHeight(
                 plan.outWidth,
                 plan.outHeight,
@@ -214,23 +211,7 @@ class ExportManager(private val context: Context) {
                         plan.outHeight,
                     )
                 }
-                val videoEffects = ArrayList<Effect>(3).apply {
-                    add(matrix)
-                    add(presentation)
-                    if (captionSegments.isNotEmpty()) {
-                        add(
-                            OverlayEffect(
-                                ImmutableList.of(
-                                    TimedCaptionOverlay(
-                                        segments = captionSegments,
-                                        sourceSegmentStartMs = segment.startMs,
-                                        sourceSegmentEndMs = segment.endMs,
-                                    ),
-                                ),
-                            ),
-                        )
-                    }
-                }
+                val videoEffects = listOf<Effect>(matrix, presentation)
                 EditedMediaItem.Builder(mediaItem)
                     .setEffects(androidx.media3.transformer.Effects(emptyList(), videoEffects))
                     .build()

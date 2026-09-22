@@ -42,7 +42,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.shortsclipper.ui.components.ModelManagerCard
 import com.shortsclipper.ui.components.formatTime
 import com.shortsclipper.ui.theme.Accent
 import com.shortsclipper.ui.theme.BgControl
@@ -55,7 +54,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Home: video import, recent projects and the on-device model manager. */
+/** Home: video import and recent projects. */
 @Composable
 fun HomeScreen(
     viewModel: EditorViewModel,
@@ -188,13 +187,9 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
-        ModelManagerCard(viewModel)
-
         Spacer(Modifier.height(16.dp))
         Text(
-            "Private by design: videos, transcripts and exports never leave your device. " +
-                "Content Potential scores are local content-quality signals, not engagement guarantees.",
+            "Private by design: videos and exports stay on your device. Editing, reframing, face tracking and silence processing run locally.",
             color = TextSecondary,
             fontSize = 10.sp,
         )

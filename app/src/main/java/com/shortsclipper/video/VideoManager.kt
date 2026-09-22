@@ -349,8 +349,8 @@ object VideoManager {
                             if (bufferInfo.size > 0) {
                                 // PCM is written as a timeline, not merely a
                                 // concatenation of decoder buffers. Preserve a
-                                // genuine PTS gap as silence so transcript,
-                                // waveform and silence-removal timestamps stay
+                                // genuine PTS gap as silence so waveform and
+                                // silence-removal timestamps stay
                                 // aligned with the source video. Bound malformed
                                 // PTS values before they can create a gigantic
                                 // cache file of invented silence.
@@ -381,7 +381,7 @@ object VideoManager {
                                 // of each PCM buffer. Some codecs emit small
                                 // overlapping buffers; appending their entire
                                 // payload would duplicate audio and shift the
-                                // waveform/transcript timeline. Advance the
+                                // waveform timeline. Advance the
                                 // resampler through every source sample, but
                                 // drop only the already-written target samples.
                                 val overlapTrimmer = TargetTimelineOverlapTrimmer(overlapSamples)
