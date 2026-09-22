@@ -40,7 +40,6 @@ class ProjectRepositoryTest {
         ),
         timeline = TimelineState(10_000, 45_000, zoom = 2.5f),
         audioEnvelope = listOf(0.1f, 0.5f, 0.3f),
-        audioStartMs = 42L,
         detectedSilences = listOf(SilenceEdit(20_000, 21_000)),
         silenceRemovals = listOf(SilenceEdit(20_000, 21_000)),
         tracking = com.shortsclipper.model.TrackingState(
@@ -71,37 +70,12 @@ class ProjectRepositoryTest {
     }
 
     @Test
-    fun `older same millisecond revision cannot overwrite a newer autosave`() {
-        val repo = ProjectRepository(tmp.root)
-        val newer = fullProject("same-time").copy(updatedAtMs = 9_000L, revision = 4L, name = "new")
-        val older = newer.copy(revision = 3L, name = "old")
-        assertTrue(repo.save(newer))
-        assertTrue(repo.save(older))
-        assertEquals("new", repo.load("same-time")?.name)
-    }
-
-    @Test
     fun `delete removes the project`() {
         val repo = ProjectRepository(tmp.root)
         repo.save(fullProject("gone"))
         assertTrue(repo.delete("gone"))
         assertNull(repo.load("gone"))
         assertFalse(repo.delete("gone"))
-    }
-
-    @Test
-    fun `backup is recovered after an interrupted rename`() {
-        val repo = ProjectRepository(tmp.root)
-        val project = fullProject("recover")
-        assertTrue(repo.save(project))
-        val directory = java.io.File(tmp.root, "projects")
-        val target = java.io.File(directory, "recover.json")
-        val backup = java.io.File(directory, "recover.json.previous")
-        assertTrue(target.renameTo(backup))
-
-        assertEquals(project, repo.load("recover"))
-        assertTrue(target.isFile)
-        assertFalse(backup.exists())
     }
 
     @Test

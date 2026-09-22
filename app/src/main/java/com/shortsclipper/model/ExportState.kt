@@ -4,9 +4,8 @@ import kotlinx.serialization.Serializable
 
 /**
  * Export quality preference. There is no lossless promise after re-encoding:
- * SAME_AS_ORIGINAL preserves as much source display resolution as the
- * capability-checked 9:16 encoder supports; HIGH_QUALITY caps practical
- * output detail. AVC is preferred for broad playback compatibility.
+ * SAME_AS_ORIGINAL keeps original resolution/codec when the device encoder
+ * supports it; HIGH_QUALITY caps at 1080p.
  */
 @Serializable
 enum class QualityMode {

@@ -4,17 +4,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +26,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -50,14 +50,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shortsclipper.model.SmoothingPreset
-import com.shortsclipper.model.ExportPlanner
+import com.shortsclipper.ui.components.CutIcon
 import com.shortsclipper.ui.components.PauseIcon
 import com.shortsclipper.ui.components.PlayIcon
 import com.shortsclipper.ui.components.RedoIcon
 import com.shortsclipper.ui.components.TimelineView
 import com.shortsclipper.ui.components.UndoIcon
 import com.shortsclipper.ui.components.VideoPreview
-import com.shortsclipper.ui.components.PreviewMode
 import com.shortsclipper.ui.components.formatTime
 import com.shortsclipper.ui.theme.Accent
 import com.shortsclipper.ui.theme.BgControl
@@ -84,14 +83,10 @@ fun EditorScreen(
     val state by viewModel.state.collectAsState()
     val playhead by viewModel.playheadMs.collectAsState()
     val playing by viewModel.isPlaying.collectAsState()
-    val playbackError by viewModel.playbackError.collectAsState()
     val trackingProgress by viewModel.trackingPassProgress.collectAsState()
-    val trackingError by viewModel.trackingError.collectAsState()
-    val previewSkipSilences by viewModel.previewSkipSilences.collectAsState()
 
     var showTrackingSheet by remember { mutableStateOf(false) }
     var showSilenceSheet by remember { mutableStateOf(false) }
-    var previewMode by remember { mutableStateOf(PreviewMode.SOURCE) }
 
     val source = state.source
     if (source == null) {
@@ -101,18 +96,7 @@ fun EditorScreen(
         return
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // Reserve a bounded preview area instead of giving it a weight that can
-        // push the timeline, editor controls, or Export button off-screen.
-        val previewHeight = (maxHeight - 450.dp).coerceIn(88.dp, 220.dp)
-        // On compact phones the editor remains scrollable rather than clipping
-        // the timeline, action rows, or Export control below the viewport.
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp),
-        ) {
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
 
         // ---- Top bar -------------------------------------------------------
         Row(
@@ -140,39 +124,13 @@ fun EditorScreen(
             }
         }
 
-        // ---- Preview mode + controlled preview -----------------------------
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FilterChip(
-                selected = previewMode == PreviewMode.SOURCE,
-                onClick = { previewMode = PreviewMode.SOURCE },
-                label = { Text("Source", fontSize = 11.sp) },
-                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Accent, selectedLabelColor = Color.Black),
-            )
-            FilterChip(
-                selected = previewMode == PreviewMode.OUTPUT_9_16,
-                onClick = { previewMode = PreviewMode.OUTPUT_9_16 },
-                label = { Text("9:16 output", fontSize = 11.sp) },
-                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Accent, selectedLabelColor = Color.Black),
-            )
-            Text(
-                if (previewMode == PreviewMode.SOURCE) "Original aspect · green frame is export crop" else "Final reframed output",
-                color = TextSecondary,
-                fontSize = 10.sp,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Box(
-            modifier = Modifier.fillMaxWidth().height(previewHeight),
-            contentAlignment = Alignment.Center,
-        ) {
+        // ---- Video preview -------------------------------------------------
+        Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
             VideoPreview(
                 viewModel = viewModel,
-                mode = previewMode,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatioFrom(source.displayWidth, source.displayHeight),
             )
             if (trackingProgress >= 0f) {
                 Column(
@@ -183,7 +141,7 @@ fun EditorScreen(
                 ) {
                     Text("Scanning faces… ${(trackingProgress * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
                     LinearProgressIndicator(
-                        progress = trackingProgress,
+                        progress = { trackingProgress },
                         color = Accent,
                         modifier = Modifier.padding(top = 8.dp).width(180.dp),
                     )
@@ -233,36 +191,13 @@ fun EditorScreen(
             Spacer(Modifier.width(8.dp))
             Text("Auto Face Tracking", color = TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
             if (state.tracking.targetFaceId != null) {
-                Text(
-                    "Face #${state.tracking.targetFaceId}",
-                    color = TextSecondary,
-                    fontSize = 10.sp,
-                    maxLines = 1,
-                    modifier = Modifier.widthIn(max = 74.dp),
-                )
+                Text("Face #${state.tracking.targetFaceId} · tap preview faces to switch", color = TextSecondary, fontSize = 10.sp)
                 Spacer(Modifier.width(8.dp))
             }
             Switch(
                 checked = state.tracking.autoEnabled,
                 onCheckedChange = { viewModel.setAutoTracking(it) },
                 colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = Color.Black),
-            )
-        }
-
-        if (trackingError != null) {
-            Text(
-                trackingError!!,
-                color = Warning,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(vertical = 2.dp),
-            )
-        }
-        if (playbackError != null) {
-            Text(
-                playbackError!!,
-                color = Warning,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(vertical = 2.dp),
             )
         }
 
@@ -273,14 +208,8 @@ fun EditorScreen(
             selectionEndMs = state.timeline.selectionEndMs,
             playheadMs = playhead,
             envelope = state.audioEnvelope,
-            envelopeStartMs = state.audioStartMs,
-            envelopeStepMs = state.envelopeStepMs,
             zoom = state.timeline.zoom,
-            removals = ExportPlanner.effectiveCuts(
-                state.timeline.selectionStartMs,
-                state.timeline.selectionEndMs,
-                state.silenceRemovals,
-            ),
+            removals = state.silenceRemovals,
             onSelection = { start, end -> viewModel.setSelection(start, end) },
             onSeek = { viewModel.seekTo(it) },
             onZoom = { viewModel.setTimelineZoom(it) },
@@ -289,22 +218,21 @@ fun EditorScreen(
 
         if (state.silenceRemovals.isNotEmpty()) {
             Text(
-                text = "Silence removal ON · edited duration ${formatTime(state.editedDurationMs)} · " +
-                    if (previewSkipSilences) "preview skips pauses" else "preview plays the source timeline",
+                "Silence removal ON · edited duration ${formatTime(state.editedDurationMs)} · preview skips pauses",
                 color = Success,
                 fontSize = 10.sp,
             )
         }
 
-        // ---- Bottom editing actions ---------------------------------------
+        // ---- Bottom actions ------------------------------------------------
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            EditorAction("Tracking / Reframe", Modifier.weight(1f)) { showTrackingSheet = true }
-            EditorAction("Silence", Modifier.weight(1f)) { showSilenceSheet = true }
+            EditorAction("Tracking / Reframe", Modifier.weight(1.2f)) { showTrackingSheet = true }
+            EditorAction("Silence", Modifier.weight(0.8f)) { showSilenceSheet = true }
         }
-        }
+        Spacer(Modifier.height(4.dp))
     }
 
     if (showTrackingSheet) {
@@ -335,6 +263,9 @@ private fun EditorAction(label: String, modifier: Modifier = Modifier, onClick: 
     }
 }
 
+private fun Modifier.aspectRatioFrom(w: Int, h: Int): Modifier =
+    if (h > 0 && w > 0) this.aspectRatio(w.toFloat() / h) else this
+
 @Composable
 private fun TrackingSheetContent(viewModel: EditorViewModel) {
     val state by viewModel.state.collectAsState()
@@ -346,17 +277,6 @@ private fun TrackingSheetContent(viewModel: EditorViewModel) {
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
         )
-
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
-            Button(
-                onClick = { viewModel.startFaceDetectionPass() },
-                colors = ButtonDefaults.buttonColors(containerColor = BgControl, contentColor = TextPrimary),
-            ) {
-                Text("Scan selected range", fontSize = 12.sp)
-            }
-            Spacer(Modifier.width(10.dp))
-            Text("ML Kit follows every decoded frame; saved paths are compact.", color = TextSecondary, fontSize = 10.sp)
-        }
 
         Text("Tracking smoothing", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Row(modifier = Modifier.padding(top = 6.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -431,7 +351,7 @@ private fun SilenceSheetContent(viewModel: EditorViewModel) {
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text("Silence detection & removal", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Detects unnecessary pauses from the local audio envelope. Short natural pauses are kept by default, and cuts stay inside detected quiet windows.",
+            "Detects unnecessary pauses from the local audio envelope. Short natural pauses are kept by default. Removals never cut words: cuts happen inside silence windows only.",
             color = TextSecondary,
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
@@ -455,13 +375,6 @@ private fun SilenceSheetContent(viewModel: EditorViewModel) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
             when {
                 isPreparingAudio -> {
-                    Button(
-                        onClick = viewModel::cancelAudioPreparation,
-                        colors = ButtonDefaults.buttonColors(containerColor = BgControl, contentColor = TextPrimary),
-                    ) {
-                        Text("Cancel audio analysis", fontSize = 12.sp)
-                    }
-                    Spacer(Modifier.width(12.dp))
                     Text("Analyzing local audio…", color = TextSecondary, fontSize = 11.sp)
                 }
                 state.audioEnvelope.isEmpty() -> {

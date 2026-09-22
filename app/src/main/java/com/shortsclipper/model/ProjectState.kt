@@ -57,62 +57,36 @@ object ExportPlanner {
     const val MIN_SEGMENT_MS = 250L
     const val KEEP_PAD_MS = 120L
 
-    /** Actual source intervals removed after preserving speech-safe padding. */
-    fun effectiveCuts(selectionStartMs: Long, selectionEndMs: Long, removals: List<SilenceEdit>): List<SilenceEdit> {
-        if (selectionEndMs <= selectionStartMs) return emptyList()
-        val normalized = removals
-            .mapNotNull { removal ->
-                val start = (removal.startMs + KEEP_PAD_MS).coerceIn(selectionStartMs, selectionEndMs)
-                val end = (removal.endMs - KEEP_PAD_MS).coerceIn(selectionStartMs, selectionEndMs)
-                if (end > start) SilenceEdit(start, end) else null
-            }
-            .sortedBy { it.startMs }
-
-        // Coalesce overlaps so cursor advancement and timeline rendering agree.
-        val merged = ArrayList<SilenceEdit>()
-        for (cut in normalized) {
-            val previous = merged.lastOrNull()
-            if (previous != null && cut.startMs <= previous.endMs) {
-                merged[merged.lastIndex] = previous.copy(endMs = maxOf(previous.endMs, cut.endMs))
-            } else {
-                merged += cut
-            }
-        }
-        return merged
-    }
-
     fun buildSegments(selectionStartMs: Long, selectionEndMs: Long, removals: List<SilenceEdit>): List<ClipSegment> {
         if (selectionEndMs <= selectionStartMs) return emptyList()
-        val cuts = effectiveCuts(selectionStartMs, selectionEndMs, removals)
-        val rawSegments = ArrayList<ClipSegment>()
-        var cursor = selectionStartMs
-        for (cut in cuts) {
-            if (cut.startMs > cursor) rawSegments += ClipSegment(cursor, cut.startMs)
-            cursor = maxOf(cursor, cut.endMs)
-        }
-        if (cursor < selectionEndMs) rawSegments += ClipSegment(cursor, selectionEndMs)
-        if (rawSegments.isEmpty()) return emptyList()
+        val clips = removals
+            .map { SilenceEdit(it.startMs + KEEP_PAD_MS, it.endMs - KEEP_PAD_MS) }
+            .filter { it.endMs > it.startMs }
+            .sortedBy { it.startMs }
 
-        // A micro-segment would make an audible click or cut a word. Merge it
-        // with a neighbor (thereby keeping that tiny silence) instead of
-        // dropping source video at either edge of the selection.
-        val result = ArrayList<ClipSegment>()
-        for (index in rawSegments.indices) {
-            val segment = rawSegments[index]
-            if (segment.durationMs >= MIN_SEGMENT_MS) {
-                result += segment
-            } else if (result.isNotEmpty()) {
-                val previous = result.removeAt(result.lastIndex)
-                result += ClipSegment(previous.startMs, segment.endMs)
-            } else if (index + 1 < rawSegments.size) {
-                val next = rawSegments[index + 1]
-                rawSegments[index + 1] = ClipSegment(segment.startMs, next.endMs)
+        val segments = ArrayList<ClipSegment>()
+        var cursor = selectionStartMs
+        for (cut in clips) {
+            val cutStart = cut.startMs.coerceIn(selectionStartMs, selectionEndMs)
+            val cutEnd = cut.endMs.coerceIn(selectionStartMs, selectionEndMs)
+            if (cutStart > cursor) {
+                segments.add(ClipSegment(cursor, cutStart))
+            }
+            cursor = maxOf(cursor, cutEnd)
+        }
+        if (cursor < selectionEndMs) segments.add(ClipSegment(cursor, selectionEndMs))
+
+        // Merge/protect against micro segments so speech is never chopped into slivers.
+        val merged = ArrayList<ClipSegment>()
+        for (seg in segments) {
+            if (seg.durationMs < MIN_SEGMENT_MS && merged.isNotEmpty()) {
+                val prev = merged.removeAt(merged.size - 1)
+                merged.add(ClipSegment(prev.startMs, seg.endMs))
             } else {
-                // A very short whole selection is still a legitimate clip.
-                result += segment
+                merged.add(seg)
             }
         }
-        return result.filter { it.durationMs > 0L }
+        return merged.filter { it.durationMs >= MIN_SEGMENT_MS }
     }
 }
 
@@ -126,15 +100,11 @@ data class ProjectState(
     val name: String,
     val createdAtMs: Long = 0L,
     val updatedAtMs: Long = 0L,
-    /** Monotonic edit generation prevents same-millisecond autosave rollback. */
-    val revision: Long = 0L,
     val source: VideoSource? = null,
     val timeline: TimelineState = TimelineState(),
     val tracking: TrackingState = TrackingState(),
-    /** Downsampled audio loudness (RMS) used for waveform + silence detection. */
+    /** Downsampled audio loudness (RMS) used for the waveform + silence detection. */
     val audioEnvelope: List<Float> = emptyList(),
-    /** Source-video timestamp of the first decoded PCM sample. */
-    val audioStartMs: Long = 0L,
     val envelopeStepMs: Int = 100,
     /** Detected silence intervals (not yet applied). */
     val detectedSilences: List<SilenceEdit> = emptyList(),
@@ -149,7 +119,7 @@ data class ProjectState(
     val editedDurationMs: Long get() = exportSegments.sumOf { it.durationMs }
 
     fun sourceAt(segmentTimeMs: Long): Long {
-        var remaining = segmentTimeMs.coerceAtLeast(0L)
+        var remaining = segmentTimeMs
         for (seg in exportSegments) {
             if (remaining < seg.durationMs) return seg.startMs + remaining
             remaining -= seg.durationMs

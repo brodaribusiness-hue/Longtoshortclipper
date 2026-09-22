@@ -22,13 +22,10 @@ import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -54,27 +51,10 @@ fun ExportScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
-    val context = LocalContext.current
-    var permissionMessage by remember { mutableStateOf<String?>(null) }
 
     // Legacy devices (< Android 10) need WRITE_EXTERNAL_STORAGE for the gallery save.
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
-            permissionMessage = null
-            viewModel.startExport()
-        } else {
-            permissionMessage = "Storage permission is required to save exports on Android 9 and below."
-        }
-    }
-    fun beginExport() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-            context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        } else {
-            permissionMessage = null
-            viewModel.startExport()
-        }
+        if (granted) viewModel.startExport()
     }
 
     Column(
@@ -96,10 +76,6 @@ fun ExportScreen(
             fontSize = 12.sp,
         )
 
-        if (permissionMessage != null) {
-            Text(permissionMessage!!, color = Error, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
-        }
-
         Spacer(Modifier.height(18.dp))
         Text("Quality", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
 
@@ -107,24 +83,22 @@ fun ExportScreen(
             RadioButton(
                 selected = state.exportQuality == QualityMode.SAME_AS_ORIGINAL,
                 onClick = { viewModel.setExportQuality(QualityMode.SAME_AS_ORIGINAL) },
-                enabled = !exportState.isBusy,
                 colors = RadioButtonDefaults.colors(selectedColor = Accent),
             )
             Column {
                 Text("Same as Original", color = TextPrimary, fontSize = 13.sp)
-                Text("Uses source-detail resolution when supported; exports AVC for broad playback", color = TextSecondary, fontSize = 10.sp)
+                Text("Keeps source resolution/codec when the device encoder supports it", color = TextSecondary, fontSize = 10.sp)
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             RadioButton(
                 selected = state.exportQuality == QualityMode.HIGH_QUALITY,
                 onClick = { viewModel.setExportQuality(QualityMode.HIGH_QUALITY) },
-                enabled = !exportState.isBusy,
                 colors = RadioButtonDefaults.colors(selectedColor = Accent),
             )
             Column {
                 Text("High Quality", color = TextPrimary, fontSize = 13.sp)
-                Text("Caps at 1080×1920-class output for reliable quality", color = TextSecondary, fontSize = 10.sp)
+                Text("Caps at 1080p for fast, reliable export", color = TextSecondary, fontSize = 10.sp)
             }
         }
         Text(
@@ -168,7 +142,11 @@ fun ExportScreen(
                 )
                 Button(
                     onClick = {
-                        beginExport()
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } else {
+                            viewModel.startExport()
+                        }
                     },
                     modifier = Modifier.fillMaxWidth().height(46.dp).padding(top = 16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
@@ -180,7 +158,11 @@ fun ExportScreen(
                 Text("Export cancelled", color = TextSecondary, fontSize = 14.sp)
                 Button(
                     onClick = {
-                        beginExport()
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } else {
+                            viewModel.startExport()
+                        }
                     },
                     modifier = Modifier.fillMaxWidth().height(46.dp).padding(top = 16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
@@ -191,7 +173,11 @@ fun ExportScreen(
             com.shortsclipper.model.ExportPhase.IDLE -> {
                 Button(
                     onClick = {
-                        beginExport()
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } else {
+                            viewModel.startExport()
+                        }
                     },
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
@@ -211,7 +197,7 @@ fun ExportScreen(
                     fontSize = 14.sp,
                 )
                 LinearProgressIndicator(
-                    progress = (exportState.progressPercent / 100f).coerceIn(0f, 1f),
+                    progress = { (exportState.progressPercent / 100f).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                     color = Accent,
                 )

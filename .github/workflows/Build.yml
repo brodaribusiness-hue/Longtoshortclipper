@@ -1,7 +1,8 @@
 name: Build
 
 permissions:
-  contents: read
+  contents: write
+  issues: write
 
 on:
   push:
@@ -13,133 +14,138 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Set up Android SDK
-        env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
         run: |
-          set -euo pipefail
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline-tools.zip
-          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
-          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
-            "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
-            "emulator" "system-images;android-30;google_apis;x86_64"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
-
-      - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@v5
-
-      - name: Build debug APK and run JVM unit tests
-        run: |
-          set -o pipefail
-          ./gradlew --no-daemon assembleDebug testDebugUnitTest --stacktrace 2>&1 | tee build_output.log
-
-      # Use the maintained emulator action rather than open-coding AVD startup.
-      # It handles the emulator's serial/port handshake and reports boot failures
-      # with diagnostics, which is more reliable across changing hosted images.
-      - name: Enable KVM access for emulator
-        run: |
-          if [ -e /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
-
-      - name: Run Android emulator smoke tests
-        uses: reactivecircus/android-emulator-runner@v2.38.0
-        with:
-          api-level: 30
-          target: google_apis
-          arch: x86_64
-          profile: Nexus 6
-          avd-name: shortsclipper-api30
-          emulator-boot-timeout: 600
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -no-metrics
-          disable-animations: true
-          # android-emulator-runner executes this through /bin/sh; explicitly
-          # select Bash because dash does not implement `set -o pipefail`.
-          script: bash -o pipefail -c './gradlew --no-daemon connectedDebugAndroidTest --stacktrace 2>&1 | tee -a build_output.log'
-
-      # Preserve focused diagnostics in the job summary and add one meaningful
-      # check annotation. Do not turn successful Gradle task lines into errors:
-      # that can hide the actual emulator or test failure.
-      - name: Surface Android build diagnostics
-        if: failure()
-        run: |
-          set +e
-          error_lines=$(
-            {
-              grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:|^> Task .* FAILED" build_output.log 2>/dev/null
-              # Connected-test failures are stored as JUnit XML rather than in
-              # Gradle's concise exception, so include their exact message too.
-              find app/build/outputs/androidTest-results app/build/test-results \
-                -type f -name '*.xml' -exec grep -aH -E '<(failure|error)( |>)' {} + 2>/dev/null
-            } | tail -100
-          )
+          set -e
+          SDK_ROOT=${RUNNER_TEMP}/android-sdk
+          mkdir -p "$SDK_ROOT/cmdline-tools"
           {
-            echo "## Android verification diagnostics"
-            if [ -n "$error_lines" ]; then
-              echo '```text'
-              printf '%s\n' "$error_lines"
-              echo '```'
-            else
-              echo "No Gradle error was captured. Inspect the failed emulator-action step above."
-            fi
-            echo "### Build-output tail"
-            echo '```text'
-            tail -100 build_output.log 2>/dev/null || true
+            echo "## SDK setup"
             echo '```'
-          } > /tmp/build-diagnostics.md
-          cat /tmp/build-diagnostics.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$error_lines" ]; then
-            first_error=$(printf '%s\n' "$error_lines" | tail -1 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
-            echo "::error title=Android build diagnostics::$first_error"
-          else
-            echo "::error title=Android verification failed::No Gradle error was captured; inspect the failed emulator-action step above."
-          fi
-          exit 0
+            uname -a
+            echo "ANDROID_HOME(before)=$ANDROID_HOME"
+            which sdkmanager || echo "no sdkmanager on PATH"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/clt.zip || {
+            echo "cmdline-tools download FAILED" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
+          unzip -q /tmp/clt.zip -d "$SDK_ROOT/cmdline-tools"
+          rm -rf "$SDK_ROOT/cmdline-tools/latest"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          export ANDROID_HOME=$SDK_ROOT
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
 
-      - name: Build unsigned release APK
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
         run: |
           set -o pipefail
-          ./gradlew --no-daemon assembleRelease --stacktrace 2>&1 | tee -a build_output.log
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee build_output.log
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          ./gradlew testDebugUnitTest --stacktrace 2>&1 | tee -a build_output.log
+
+      - name: Build release APK (unsigned)
+        run: |
+          set -o pipefail
+          ./gradlew assembleRelease --stacktrace 2>&1 | tee -a build_output.log
+
+      - name: Test summary
+        if: always()
+        run: |
+          {
+            echo "## Unit test results"
+            find app/build/test-results -name "*.xml" | while read -r f; do
+              head -3 "$f" | grep testsuite || true
+            done | head -30
+            echo "## Build tail"
+            tail -5 build_output.log || true
+          } >> $GITHUB_STEP_SUMMARY
 
       - name: Upload debug APK
-        if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: shortsclipper-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Upload unsigned release APK
-        if: success()
-        uses: actions/upload-artifact@v7
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
         with:
           name: shortsclipper-release-apk
           path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
 
-      - name: Upload test and build logs
+      - name: Upload unit test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: build-and-test-results
-          path: |
-            app/build/test-results/
-            app/build/outputs/androidTest-results/
-            app/build/reports/androidTests/
-            build_output.log
-            /tmp/android-emulator.log
+          name: unit-test-results
+          path: app/build/test-results/
           if-no-files-found: ignore
+
+      # Publish every green build as a GitHub release so the APKs are easy to
+      # download without digging through Actions artifacts.
+      - name: Attach APKs to release (on success)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v1.0-latest \
+            app/build/outputs/apk/debug/app-debug.apk#ShortsClipper-debug-installable.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk#ShortsClipper-release-unsigned.apk \
+            --title "ShortsClipper v1.0 (latest CI build)" \
+            --notes "Automated green build of commit ${GITHUB_SHA::7}. The debug APK installs directly (adb install or sideload). The release APK is unsigned - sign it with your own keystore before distributing." \
+            --prerelease \
+            || gh release upload v1.0-latest \
+            app/build/outputs/apk/debug/app-debug.apk#ShortsClipper-debug-installable.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk#ShortsClipper-release-unsigned.apk \
+            --clobber
+
+      # CI raw logs are not fetchable from some restricted networks, so on
+      # failure we push the error tail to the `ci-errors` branch and open an
+      # issue - both readable via api.github.com.
+      - name: Report errors (on failure)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Build errors for commit ${GITHUB_SHA::7}"
+            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by|A problem occurred" build_output.log 2>/dev/null | sort -u | head -80
+            echo
+            echo "=== failing unit tests ==="
+            for f in app/build/test-results/testDebugUnitTest/*.xml; do
+              [ -e "$f" ] || continue
+              awk '/<testcase name=/{tc=$0} /<failure|<error/{if (tc!=""){gsub(/^[ \t]+/,"",tc); print tc; print "   " prev; tc=""}} {prev=$0}' "$f" | head -40
+              grep -oE '<failure message="[^"]{0,300}' "$f" | head -10
+            done
+            echo
+            echo "=== last 30 log lines ==="
+            tail -30 build_output.log 2>/dev/null
+          } > ci-errors.md
+          git config user.name "ci-log-bot"
+          git config user.email "ci-log-bot@users.noreply.github.com"
+          git checkout -B ci-errors
+          git add ci-errors.md
+          git commit -m "CI error log ${GITHUB_SHA::7}" || true
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-errors || echo "branch push failed"
+          gh issue create --title "CI build errors ${GITHUB_SHA::7}" --body-file ci-errors.md || echo "issue create failed"

@@ -20,9 +20,8 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,12 +29,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.shortsclipper.model.SilenceEdit
 import com.shortsclipper.ui.theme.Accent
 import com.shortsclipper.ui.theme.BgControl
 import com.shortsclipper.ui.theme.TextPrimary
@@ -44,44 +43,22 @@ import kotlin.math.max
 import kotlin.math.min
 
 private enum class DragMode { NONE, START_HANDLE, END_HANDLE, SCRUB }
-private const val MIN_SELECTION_MS = 250L
-
-/**
- * Current values read by the long-lived pointer-input coroutines. Keeping this
- * immutable snapshot in [rememberUpdatedState] lets selection updates redraw
- * the timeline without cancelling an in-progress handle drag.
- */
-private data class TimelinePointerState(
-    val durationMs: Long,
-    val selectionStartMs: Long,
-    val selectionEndMs: Long,
-    val widthPx: Float,
-    val minimumSelectionMs: Long,
-    val onSelection: (Long, Long) -> Unit,
-    val onSeek: (Long) -> Unit,
-) {
-    private val msPerPx: Float get() = durationMs.toFloat() / widthPx.coerceAtLeast(1f)
-
-    fun xToMs(x: Float): Long = (x * msPerPx).toLong().coerceIn(0L, durationMs)
-    fun msToX(ms: Long): Float = ms / msPerPx
-}
 
 fun formatTime(ms: Long, withFraction: Boolean = false): String {
-    val safeMs = ms.coerceAtLeast(0L)
-    val totalSeconds = safeMs / 1000.0
-    val minutes = (totalSeconds / 60).toInt()
-    val seconds = (totalSeconds % 60).toInt()
+    val totalSeconds = ms / 1000.0
+    val m = (totalSeconds / 60).toInt()
+    val s = (totalSeconds % 60).toInt()
     return if (withFraction) {
-        val tenths = (((totalSeconds % 60) - seconds) * 10).toInt().coerceIn(0, 9)
-        String.format("%d:%02d.%d", minutes, seconds, tenths)
+        val frac = ((totalSeconds % 60) - s)
+        String.format("%d:%02d.%d", m, s, (frac * 10).toInt())
     } else {
-        String.format("%d:%02d", minutes, seconds)
+        String.format("%d:%02d", m, s)
     }
 }
 
 /**
- * Timeline state is wholly composition-scoped: no global drawing/removal
- * overlays survive recomposition or leak into another editor instance.
+ * Lightweight professional timeline: waveform, selected region with draggable
+ * start/end handles, draggable playhead and pinch-free zoom (slider).
  */
 @Composable
 fun TimelineView(
@@ -90,45 +67,39 @@ fun TimelineView(
     selectionEndMs: Long,
     playheadMs: Long,
     envelope: List<Float>,
-    /** Source timestamp represented by envelope index zero. */
-    envelopeStartMs: Long,
-    envelopeStepMs: Int,
     zoom: Float,
-    removals: List<SilenceEdit>,
+    removals: List<com.shortsclipper.model.SilenceEdit>,
     onSelection: (Long, Long) -> Unit,
     onSeek: (Long) -> Unit,
     onZoom: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (durationMs <= 0L) return
-
-    val scrollState = rememberScrollState()
-    var dragMode by remember { mutableStateOf(DragMode.NONE) }
-    val safeStart = selectionStartMs.coerceIn(0L, durationMs)
-    val safeEnd = selectionEndMs.coerceIn(safeStart, durationMs)
+    if (durationMs <= 0) return
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
             Text(
-                formatTime(safeStart, withFraction = true),
+                formatTime(selectionStartMs, withFraction = true),
                 color = Accent,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
             )
             Spacer(Modifier.weight(1f))
             Text(
-                "${formatTime(safeEnd - safeStart)} clip",
+                "${formatTime(selectionEndMs - selectionStartMs)} clip",
                 color = TextSecondary,
                 fontSize = 12.sp,
             )
             Spacer(Modifier.weight(1f))
             Text(
-                formatTime(safeEnd, withFraction = true),
+                formatTime(selectionEndMs, withFraction = true),
                 color = Accent,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
             )
         }
+
+        var dragMode by remember { mutableIntStateOf(DragMode.NONE.ordinal) }
 
         BoxWithConstraints(
             modifier = Modifier
@@ -136,115 +107,128 @@ fun TimelineView(
                 .height(84.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(BgControl)
-                .horizontalScroll(scrollState),
+                .horizontalScroll(rememberScrollState()),
         ) {
             val density = LocalDensity.current
-            val totalWidth = maxWidth * zoom.coerceAtLeast(1f)
-            val widthPx = with(density) { totalWidth.toPx() }.coerceAtLeast(1f)
-            val msPerPx = durationMs.toFloat() / widthPx
-            val effectiveMinSelection = min(MIN_SELECTION_MS, durationMs)
-            val latestPointerState = rememberUpdatedState(
-                TimelinePointerState(
-                    durationMs = durationMs,
-                    selectionStartMs = safeStart,
-                    selectionEndMs = safeEnd,
-                    widthPx = widthPx,
-                    minimumSelectionMs = effectiveMinSelection,
-                    onSelection = onSelection,
-                    onSeek = onSeek,
-                ),
-            )
+            val totalWidth = maxWidth * zoom
+            val widthPx = with(density) { totalWidth.toPx() }
+            val msPerPx = durationMs / widthPx
 
-            fun msToX(ms: Long): Float = ms / msPerPx
+            fun xToMs(x: Float): Long = (x * msPerPx).toLong().coerceIn(0L, durationMs)
 
             Canvas(
                 modifier = Modifier
                     .width(totalWidth)
                     .height(84.dp)
-                    .pointerInput(Unit) {
-                        detectTapGestures { offset ->
-                            val current = latestPointerState.value
-                            current.onSeek(current.xToMs(offset.x))
-                        }
+                    .pointerInput(durationMs, selectionStartMs, selectionEndMs, zoom) {
+                        detectTapGestures { offset -> onSeek(xToMs(offset.x)) }
                     }
-                    .pointerInput(Unit) {
+                    .pointerInput(durationMs, selectionStartMs, selectionEndMs, zoom) {
                         detectDragGestures(
                             onDragStart = { offset ->
-                                val current = latestPointerState.value
-                                val startPx = current.msToX(current.selectionStartMs)
-                                val endPx = current.msToX(current.selectionEndMs)
+                                val startPx = selectionStartMs / msPerPx
+                                val endPx = selectionEndMs / msPerPx
+                                val playPx = playheadMs / msPerPx
                                 dragMode = when {
-                                    kotlin.math.abs(offset.x - startPx) < 48f -> DragMode.START_HANDLE
-                                    kotlin.math.abs(offset.x - endPx) < 48f -> DragMode.END_HANDLE
-                                    else -> DragMode.SCRUB
+                                    kotlin.math.abs(offset.x - startPx) < 48f -> DragMode.START_HANDLE.ordinal
+                                    kotlin.math.abs(offset.x - endPx) < 48f -> DragMode.END_HANDLE.ordinal
+                                    else -> DragMode.SCRUB.ordinal
                                 }
-                                if (dragMode == DragMode.SCRUB) current.onSeek(current.xToMs(offset.x))
+                                if (dragMode == DragMode.SCRUB.ordinal && kotlin.math.abs(offset.x - playPx) > 48f) {
+                                    onSeek(xToMs(offset.x))
+                                }
                             },
                             onDrag = { change, _ ->
                                 change.consume()
-                                val current = latestPointerState.value
-                                val positionMs = current.xToMs(change.position.x)
-                                when (dragMode) {
-                                    DragMode.START_HANDLE -> {
-                                        val maxStart = (current.selectionEndMs - current.minimumSelectionMs).coerceAtLeast(0L)
-                                        current.onSelection(positionMs.coerceIn(0L, maxStart), current.selectionEndMs)
-                                    }
-                                    DragMode.END_HANDLE -> {
-                                        val minEnd = (current.selectionStartMs + current.minimumSelectionMs)
-                                            .coerceAtMost(current.durationMs)
-                                        current.onSelection(current.selectionStartMs, positionMs.coerceIn(minEnd, current.durationMs))
-                                    }
-                                    DragMode.SCRUB -> current.onSeek(positionMs)
-                                    DragMode.NONE -> Unit
+                                val ms = xToMs(change.position.x)
+                                when (DragMode.entries[dragMode]) {
+                                    DragMode.START_HANDLE -> onSelection(min(ms, selectionEndMs - 1000), selectionEndMs)
+                                    DragMode.END_HANDLE -> onSelection(selectionStartMs, max(ms, selectionStartMs + 1000))
+                                    DragMode.SCRUB -> onSeek(ms)
+                                    else -> {}
                                 }
                             },
-                            onDragEnd = { dragMode = DragMode.NONE },
-                            onDragCancel = { dragMode = DragMode.NONE },
+                            onDragEnd = { dragMode = DragMode.NONE.ordinal },
                         )
                     },
             ) {
-                drawWaveform(envelope, envelopeStartMs, envelopeStepMs, durationMs, safeStart, safeEnd)
-
-                // These are the same edits provided to export; no hidden
-                // global overlay state can become stale after undo/recompose.
-                removals.forEach { removal ->
-                    val start = removal.startMs.coerceIn(0L, durationMs)
-                    val end = removal.endMs.coerceIn(start, durationMs)
-                    if (end > start) {
-                        drawRect(
-                            color = Color(0xFFEF4444).copy(alpha = 0.25f),
-                            topLeft = Offset(msToX(start), 0f),
-                            size = Size((msToX(end) - msToX(start)).coerceAtLeast(2f), size.height),
+                // Waveform (from the decoded audio envelope) or a flat track.
+                val mid = size.height / 2f
+                val maxRms = envelope.maxOrNull() ?: 0f
+                if (envelope.isNotEmpty() && maxRms > 0f) {
+                    val barCount = (size.width / 6f).toInt().coerceAtLeast(1)
+                    val stepMs = durationMs / barCount
+                    for (b in 0 until barCount) {
+                        val fromMs = b * stepMs
+                        val toMs = fromMs + stepMs
+                        val fromIdx = (fromMs / 100).toInt().coerceIn(0, envelope.size - 1)
+                        val toIdx = (toMs / 100).toInt().coerceIn(fromIdx + 1, envelope.size)
+                        var peak = 0f
+                        for (i in fromIdx until toIdx) peak = max(peak, envelope[i])
+                        val h = (peak / maxRms) * (size.height * 0.82f)
+                        val inSelection = fromMs >= selectionStartMs && fromMs <= selectionEndMs
+                        drawRoundRect(
+                            color = if (inSelection) Accent.copy(alpha = 0.85f) else Color(0xFF55555C),
+                            topLeft = Offset(b * 6f + 1f, mid - h / 2f),
+                            size = Size(4f, h.coerceAtLeast(2f)),
+                            cornerRadius = CornerRadius(2f, 2f),
                         )
                     }
+                } else {
+                    drawRoundRect(
+                        color = Color(0xFF55555C),
+                        topLeft = Offset(0f, mid - 2f),
+                        size = Size(size.width, 4f),
+                        cornerRadius = CornerRadius(2f, 2f),
+                    )
                 }
 
-                val startX = msToX(safeStart)
-                val endX = msToX(safeEnd)
+                // Silence removals overlay.
+                val activeRemovals = currentRemovals
+                for (r in activeRemovals) {
+                    drawRect(
+                        color = Color(0xFFEF4444).copy(alpha = 0.25f),
+                        topLeft = Offset((r.startMs / msPerPx), 0f),
+                        size = Size(((r.endMs - r.startMs) / msPerPx).coerceAtLeast(2f), size.height),
+                    )
+                }
+
+                // Selected region highlight + handles.
+                val sx = selectionStartMs / msPerPx
+                val ex = selectionEndMs / msPerPx
                 drawRect(
                     color = Accent.copy(alpha = 0.12f),
-                    topLeft = Offset(startX, 0f),
-                    size = Size((endX - startX).coerceAtLeast(2f), size.height),
+                    topLeft = Offset(sx, 0f),
+                    size = Size((ex - sx).coerceAtLeast(2f), size.height),
                 )
-                val handleWidth = 8f
+                val handleW = 8f
                 drawRoundRect(
-                    color = Accent,
-                    topLeft = Offset(startX - handleWidth / 2f, 0f),
-                    size = Size(handleWidth, size.height),
+                    Accent,
+                    topLeft = Offset(sx - handleW / 2, 0f),
+                    size = Size(handleW, size.height),
                     cornerRadius = CornerRadius(4f, 4f),
                 )
                 drawRoundRect(
-                    color = Accent,
-                    topLeft = Offset(endX - handleWidth / 2f, 0f),
-                    size = Size(handleWidth, size.height),
+                    Accent,
+                    topLeft = Offset(ex - handleW / 2, 0f),
+                    size = Size(handleW, size.height),
                     cornerRadius = CornerRadius(4f, 4f),
                 )
 
-                val playheadX = msToX(playheadMs.coerceIn(0L, durationMs))
-                drawLine(TextPrimary, Offset(playheadX, 0f), Offset(playheadX, size.height), strokeWidth = 3f)
-                drawCircle(TextPrimary, radius = 7f, center = Offset(playheadX, 8f))
-                drawCircle(BgControl, radius = 3.5f, center = Offset(playheadX, 8f))
+                // Playhead.
+                val px = playheadMs / msPerPx
+                drawLine(
+                    TextPrimary,
+                    Offset(px, 0f),
+                    Offset(px, size.height),
+                    strokeWidth = 3f,
+                )
+                drawCircle(TextPrimary, radius = 7f, center = Offset(px, 8f))
+                drawCircle(BgControl, radius = 3.5f, center = Offset(px, 8f))
             }
+
+            // Second canvas just for removals capture (kept in a var used above).
+            currentRemovals = removalsLocal
         }
 
         Row(
@@ -253,7 +237,7 @@ fun TimelineView(
         ) {
             Text("Zoom", color = TextSecondary, fontSize = 11.sp)
             Slider(
-                value = zoom.coerceIn(1f, 16f),
+                value = zoom,
                 onValueChange = onZoom,
                 valueRange = 1f..16f,
                 modifier = Modifier.weight(1f).height(28.dp),
@@ -267,53 +251,7 @@ fun TimelineView(
     }
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWaveform(
-    envelope: List<Float>,
-    envelopeStartMs: Long,
-    envelopeStepMs: Int,
-    durationMs: Long,
-    selectionStartMs: Long,
-    selectionEndMs: Long,
-) {
-    val mid = size.height / 2f
-    var maxRms = 0f
-    for (sample in envelope) {
-        if (sample.isFinite()) maxRms = max(maxRms, sample.coerceAtLeast(0f))
-    }
-    if (envelope.isEmpty() || maxRms <= 0f) {
-        drawRoundRect(
-            color = Color(0xFF55555C),
-            topLeft = Offset(0f, mid - 2f),
-            size = Size(size.width, 4f),
-            cornerRadius = CornerRadius(2f, 2f),
-        )
-        return
-    }
-    val barCount = (size.width / 6f).toInt().coerceAtLeast(1)
-    val stepMs = durationMs.toFloat() / barCount
-    val safeEnvelopeStepMs = envelopeStepMs.coerceAtLeast(1).toLong()
-    val envelopeEndMs = envelopeStartMs + envelope.size.toLong() * safeEnvelopeStepMs
-    for (bar in 0 until barCount) {
-        val fromMs = bar * stepMs
-        val toMs = (bar + 1) * stepMs
-        var peak = 0f
-        if (toMs > envelopeStartMs && fromMs < envelopeEndMs) {
-            val fromIndex = ((fromMs - envelopeStartMs).coerceAtLeast(0f) / safeEnvelopeStepMs)
-                .toInt().coerceIn(0, envelope.lastIndex)
-            val exclusiveEnd = (((toMs - envelopeStartMs).coerceAtLeast(0f) / safeEnvelopeStepMs).toInt() + 1)
-                .coerceIn(fromIndex + 1, envelope.size)
-            for (index in fromIndex until exclusiveEnd) {
-                val sample = envelope[index]
-                if (sample.isFinite()) peak = max(peak, sample.coerceAtLeast(0f))
-            }
-        }
-        val height = (peak / maxRms) * (size.height * 0.82f)
-        val isSelected = fromMs >= selectionStartMs && fromMs <= selectionEndMs
-        drawRoundRect(
-            color = if (isSelected) Accent.copy(alpha = 0.85f) else Color(0xFF55555C),
-            topLeft = Offset(bar * 6f + 1f, mid - height / 2f),
-            size = Size(4f, height.coerceAtLeast(2f)),
-            cornerRadius = CornerRadius(2f, 2f),
-        )
-    }
-}
+// Timeline needs the applied removals for the red overlay; set by EditorScreen
+// right before composing. Kept as a small composition-local style holder.
+private var currentRemovals: List<com.shortsclipper.model.SilenceEdit> = emptyList()
+private var removalsLocal: List<com.shortsclipper.model.SilenceEdit> = emptyList()
