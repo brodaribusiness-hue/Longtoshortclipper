@@ -1,12 +1,14 @@
 # ShortsClipper — Long-to-Short Video Clipper (Android)
 
-Transform long videos into professionally framed 9:16 short clips — **100% on-device**: local
+Transform long videos into professionally framed 9:16 short clips with **on-device processing**: local
 transcription (whisper.cpp), deterministic content analysis, manual + automatic face tracking,
 and high-quality export through AndroidX Media3.
 
-**Privacy by design:** no accounts, no backend, no paid APIs, no cloud AI. Videos, transcripts and
-exports never leave the device. Internet is used only if the user explicitly downloads an open-source
-whisper model.
+**Privacy by design:** no accounts, no backend, no paid APIs, and no cloud AI inference. Videos,
+transcripts and exports never leave the device. The app's own explicit network request is the
+user-triggered download of an open-source Whisper model. The bundled Google ML Kit face detector performs inference
+on-device, but its terms say the SDK *may* contact Google for software/model or accelerator updates and
+performance/utilization metrics; this dependency is therefore not a zero-network/zero-telemetry SDK.
 
 ---
 
@@ -29,7 +31,7 @@ whisper model.
 - Primary output aspect ratio 9:16
 - Manual reframing: drag the preview to pan; zoom via keyframes; clamped crop window
 - Manual keyframe tracking with smoothstep interpolation (`00:00 → left`, `00:05 → center`, …)
-- Automatic face tracking (ML Kit, fully on-device): one tracking-enabled detector processes **every
+- Automatic face tracking (ML Kit inference is on-device): one tracking-enabled detector processes **every
   sequentially decoded frame** in the selected range; only its compact retained path is downsampled
   for storage, then associated and smoothed (Responsive / Balanced / Smooth presets)
 - **Hybrid tracking**: manual keyframes correct the automatic path and fade in/out around the correction
@@ -116,4 +118,5 @@ official whisper.cpp repository, or import a local `.bin` model. Transcription i
   exotic source containers are decoded and re-encoded rather than remuxed because 9:16 reframing requires it.
 - Face tracking analyzes every sequential decoder frame, but extreme motion can still challenge a fast
   on-device detector; use the Responsive preset or manual keyframes for creative corrections.
+- The bundled Google ML Kit face detector is free and its inference is on-device, but it is governed by Google ML Kit Terms rather than an open-source license; those terms allow update/accelerator checks and performance/utilization metrics. No in-app opt-out is implemented.
 - CI runs JVM logic tests plus an API 30 x86_64 emulator smoke test (app launch and packaged Whisper JNI load). Real-device validation is still recommended for vendor-specific MediaCodec, ML Kit, gallery and 90°/270° source behavior.
