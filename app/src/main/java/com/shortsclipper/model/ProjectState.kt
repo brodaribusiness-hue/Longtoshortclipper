@@ -103,7 +103,6 @@ data class ProjectState(
     val source: VideoSource? = null,
     val timeline: TimelineState = TimelineState(),
     val tracking: TrackingState = TrackingState(),
-    val transcript: Transcript? = null,
     /** Downsampled audio loudness (RMS) used for the waveform + silence detection. */
     val audioEnvelope: List<Float> = emptyList(),
     val envelopeStepMs: Int = 100,
@@ -111,10 +110,6 @@ data class ProjectState(
     val detectedSilences: List<SilenceEdit> = emptyList(),
     /** Applied silence removals inside the selected clip. */
     val silenceRemovals: List<SilenceEdit> = emptyList(),
-    val candidates: List<ClipCandidate> = emptyList(),
-    val rejectedCandidateIds: Set<String> = emptySet(),
-    val selectedCandidateId: String? = null,
-    val targetDuration: TargetDuration = TargetDuration.T30,
     val exportQuality: QualityMode = QualityMode.HIGH_QUALITY,
 ) {
     /** Segments that will actually be exported/previewed for the current clip. */
@@ -122,9 +117,6 @@ data class ProjectState(
         get() = ExportPlanner.buildSegments(timeline.selectionStartMs, timeline.selectionEndMs, silenceRemovals)
 
     val editedDurationMs: Long get() = exportSegments.sumOf { it.durationMs }
-
-    val visibleCandidates: List<ClipCandidate>
-        get() = candidates.filter { it.id !in rejectedCandidateIds }
 
     fun sourceAt(segmentTimeMs: Long): Long {
         var remaining = segmentTimeMs

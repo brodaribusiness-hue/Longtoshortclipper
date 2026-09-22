@@ -7,14 +7,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
-import com.shortsclipper.ai.ClipGenerator
-import com.shortsclipper.ai.ModelManager
 import com.shortsclipper.ai.SilenceDetector
-import com.shortsclipper.ai.TranscriptionEngine
 import com.shortsclipper.data.ProjectRepository
-import com.shortsclipper.model.AnalysisPhase
-import com.shortsclipper.model.AnalysisState
-import com.shortsclipper.model.AnalysisStep
 import com.shortsclipper.model.ExportPhase
 import com.shortsclipper.model.ExportState
 import com.shortsclipper.model.FaceBox
@@ -22,8 +16,6 @@ import com.shortsclipper.model.FacePoint
 import com.shortsclipper.model.ProjectState
 import com.shortsclipper.model.SilenceEdit
 import com.shortsclipper.model.SmoothingPreset
-import com.shortsclipper.model.StepState
-import com.shortsclipper.model.TargetDuration
 import com.shortsclipper.model.TransformKeyframe
 import com.shortsclipper.tracking.FaceTracker
 import com.shortsclipper.tracking.TrackingEngine
@@ -49,8 +41,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
     val repository = ProjectRepository(File(application.filesDir, "data"))
-    val modelManager = ModelManager(application)
-    private val transcriptionEngine = TranscriptionEngine()
     private val exportManager = ExportManager(application)
     private val faceTracker = FaceTracker(application)
 
@@ -65,7 +55,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     val isPlaying = MutableStateFlow(false)
     val previewSkipSilences = MutableStateFlow(false)
 
-    val analysisState = MutableStateFlow(AnalysisState())
+    val isPreparingAudio = MutableStateFlow(false)
+    val audioPreparationError = MutableStateFlow<String?>(null)
     val exportState = MutableStateFlow(ExportState())
     val trackingPassProgress = MutableStateFlow(-1f)
 
@@ -79,16 +70,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     var player: ExoPlayer? = null
         private set
 
-    private var pcmFile: File? = null
-    private var analysisJob: Job? = null
     private var exportJob: Job? = null
     private var trackingJob: Job? = null
     private var autosaveJob: Job? = null
-    private val analysisCancelled = AtomicBoolean(false)
     private val exportCancelled = AtomicBoolean(false)
     private val trackingCancelled = AtomicBoolean(false)
-
-    val preferredModel = MutableStateFlow(ModelManager.CATALOG[1]) // base
 
     init {
         startPlayheadPoller()
@@ -134,8 +120,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun loadProject(id: String): Boolean {
         val loaded = repository.load(id) ?: return false
-        pcmFile?.delete()
-        pcmFile = null
         synchronized(history) { history.clear() }
         synchronized(history) { history.push(loaded) }
         _state.value = loaded
@@ -155,8 +139,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val project = repository.createProject(source.displayName.removeSuffix(".mp4").ifBlank { "New clip" })
                     .copy(source = source, timeline = com.shortsclipper.model.TimelineState(0L, source.durationMs))
-                pcmFile?.delete()
-                pcmFile = null
                 synchronized(history) { history.clear(); history.push(project) }
                 _state.value = project
                 setupPlayer()
@@ -380,132 +362,40 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         commit({ it.copy(tracking = it.tracking.copy(manualKeyframes = emptyList())) })
     }
 
-    // ------------------------------------------------------------- analysis
+    // ------------------------------------------------------- silence audio
 
-    fun runAnalysis(onFinished: (String?) -> Unit = {}) {
-        val s = _state.value
-        val source = s.source ?: return
-        if (analysisJob?.isActive == true) return
-        analysisCancelled.set(false)
-
-        fun step(step: AnalysisStep, state: StepState, progress: Float? = null, message: String? = null) {
-            analysisState.value = analysisState.value.copy(
-                phase = if (state == StepState.FAILED) AnalysisPhase.FAILED else AnalysisPhase.RUNNING,
-                stepStates = analysisState.value.stepStates + (step to state),
-                stepProgress = if (progress != null) analysisState.value.stepProgress + (step to progress) else analysisState.value.stepProgress,
-                activeStep = if (state == StepState.RUNNING) step else analysisState.value.activeStep,
-                error = message ?: analysisState.value.error,
-            )
-        }
-
-        fun resetAll() {
-            analysisState.value = AnalysisState(
-                phase = AnalysisPhase.RUNNING,
-                stepStates = AnalysisStep.entries.associateWith { StepState.PENDING },
-                stepProgress = emptyMap(),
-                activeStep = null,
-                error = null,
-            )
-        }
-
-        analysisJob = viewModelScope.launch {
+    /** Prepares the local audio envelope required by the retained silence editor. */
+    fun prepareAudioForSilence() {
+        val source = _state.value.source ?: return
+        if (isPreparingAudio.value) return
+        audioPreparationError.value = null
+        isPreparingAudio.value = true
+        viewModelScope.launch {
+            var pcmFile: File? = null
             try {
-                resetAll()
-
-                // 1. Prepare audio (decode + envelope).
-                step(AnalysisStep.PREPARE_AUDIO, StepState.RUNNING)
-                pcmFile?.delete()
-                pcmFile = null
                 val decoded = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    VideoManager.decodeAudio16kMono(
-                        getApplication(),
-                        Uri.parse(source.uri),
-                        onProgress = { step(AnalysisStep.PREPARE_AUDIO, StepState.RUNNING, it) },
-                        isCancelled = { analysisCancelled.get() },
-                    )
+                    VideoManager.decodeAudio16kMono(getApplication(), Uri.parse(source.uri))
                 }
-                if (analysisCancelled.get()) throw InterruptedException()
                 if (decoded == null) {
-                    // No audio track: transcription impossible, manual editing still works.
-                    step(AnalysisStep.PREPARE_AUDIO, StepState.DONE)
-                    step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "This video has no audio track, so transcription and AI clip suggestions are unavailable. Manual clipping, reframing and tracking still work.")
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE)
-                    onFinished("This video has no audio track - AI analysis needs audio.")
+                    audioPreparationError.value = "This video has no audio track, so silence detection is unavailable."
                     return@launch
                 }
                 pcmFile = decoded.pcmFile
                 commit({
-                    it.copy(audioEnvelope = decoded.envelope, envelopeStepMs = SilenceDetector.STEP_MS)
+                    it.copy(
+                        audioEnvelope = decoded.envelope,
+                        envelopeStepMs = SilenceDetector.STEP_MS,
+                    )
                 })
-                step(AnalysisStep.PREPARE_AUDIO, StepState.DONE, 1f)
-
-                // 2. Transcribe (local whisper.cpp) + 3. word timestamps.
-                step(AnalysisStep.TRANSCRIBE, StepState.RUNNING)
-                val modelFile = modelManager.modelFile(preferredModel.value)
-                if (!modelManager.isInstalled(preferredModel.value)) {
-                    step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "No transcription model installed. Open Model Manager on the home screen and download one (one-time, ~${preferredModel.value.approxSizeMB} MB).")
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
-                    onFinished("No transcription model installed")
-                    return@launch
-                }
-                val transcript = transcriptionEngine.transcribe(
-                    pcmFile = decoded.pcmFile,
-                    modelFile = modelFile,
-                    onProgress = { p ->
-                        step(AnalysisStep.TRANSCRIBE, StepState.RUNNING, p)
-                    },
-                    isCancelled = { analysisCancelled.get() },
-                )
-                if (analysisCancelled.get()) throw InterruptedException()
-                step(AnalysisStep.TRANSCRIBE, StepState.DONE, 1f)
-
-                if (transcript.words.isEmpty()) {
-                    step(AnalysisStep.WORD_TIMESTAMPS, StepState.FAILED, message = "No speech was detected in this video.")
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
-                    onFinished("No speech detected")
-                    return@launch
-                }
-                step(AnalysisStep.WORD_TIMESTAMPS, StepState.DONE, 1f)
-
-                // 4-7. Local content analysis -> candidates -> scoring.
-                step(AnalysisStep.ANALYZE_CONTENT, StepState.RUNNING)
-                val sentences = com.shortsclipper.ai.HighlightAnalyzer.splitSentences(transcript.words)
-                step(AnalysisStep.ANALYZE_CONTENT, StepState.DONE, 1f)
-
-                step(AnalysisStep.FIND_MOMENTS, StepState.RUNNING)
-                com.shortsclipper.ai.HighlightAnalyzer.findAnchors(sentences)
-                step(AnalysisStep.FIND_MOMENTS, StepState.DONE, 1f)
-
-                step(AnalysisStep.SCORE, StepState.RUNNING)
-                step(AnalysisStep.SCORE, StepState.DONE, 1f)
-
-                step(AnalysisStep.GENERATE, StepState.RUNNING)
-                val candidates = ClipGenerator.generate(transcript, source.durationMs, s.targetDuration)
-                step(AnalysisStep.GENERATE, StepState.DONE, 1f)
-
-                commit({
-                    it.copy(transcript = transcript, candidates = candidates, rejectedCandidateIds = emptySet())
-                })
-                analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE, activeStep = null)
-                onFinished(if (candidates.isEmpty()) "No strong candidate moments found - adjust the clip manually." else null)
-            } catch (e: InterruptedException) {
-                analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // ViewModel teardown cancels the preparation coroutine.
             } catch (t: Throwable) {
-                val msg = t.message ?: "Analysis failed"
-                analysisState.value = analysisState.value.copy(
-                    phase = AnalysisPhase.FAILED,
-                    error = msg,
-                    activeStep = null,
-                )
-                onFinished(msg)
+                audioPreparationError.value = "Could not analyze audio: ${t.message ?: "unsupported audio"}"
+            } finally {
+                pcmFile?.delete()
+                isPreparingAudio.value = false
             }
         }
-    }
-
-    fun cancelAnalysis() {
-        analysisCancelled.set(true)
-        analysisJob?.cancel()
-        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
     }
 
     // -------------------------------------------------------------- silences
@@ -535,36 +425,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun clearSilenceRemoval() {
         commit({ it.copy(silenceRemovals = emptyList()) })
         previewSkipSilences.value = false
-    }
-
-    // ------------------------------------------------------------- candidates
-
-    fun setTargetDuration(target: TargetDuration) {
-        commit({ it.copy(targetDuration = target) })
-        regenerateCandidates()
-    }
-
-    fun regenerateCandidates() {
-        val s = _state.value
-        val transcript = s.transcript ?: return
-        val candidates = ClipGenerator.generate(transcript, s.source?.durationMs ?: 0L, s.targetDuration)
-        commit({ it.copy(candidates = candidates, rejectedCandidateIds = emptySet()) })
-    }
-
-    fun selectCandidate(id: String) {
-        val candidate = _state.value.candidates.firstOrNull { it.id == id } ?: return
-        commit({
-            it.copy(
-                selectedCandidateId = id,
-                timeline = it.timeline.copy(selectionStartMs = candidate.startMs, selectionEndMs = candidate.endMs),
-                silenceRemovals = emptyList(),
-            )
-        })
-        seekTo(candidate.startMs)
-    }
-
-    fun rejectCandidate(id: String) {
-        commit({ it.copy(rejectedCandidateIds = it.rejectedCandidateIds + id) })
     }
 
     // ---------------------------------------------------------------- export
@@ -645,11 +505,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
-        analysisJob?.cancel()
         exportJob?.cancel()
         trackingJob?.cancel()
         autosaveJob?.cancel()
-        pcmFile?.delete()
         player?.release()
         player = null
         super.onCleared()

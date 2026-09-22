@@ -1,15 +1,10 @@
 package com.shortsclipper
 
 import com.shortsclipper.data.ProjectRepository
-import com.shortsclipper.model.ClipCandidate
-import com.shortsclipper.model.ScoreComponents
 import com.shortsclipper.model.SilenceEdit
-import com.shortsclipper.model.TargetDuration
 import com.shortsclipper.model.TimelineState
 import com.shortsclipper.model.TransformKeyframe
-import com.shortsclipper.model.Transcript
 import com.shortsclipper.model.VideoSource
-import com.shortsclipper.model.Word
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -44,26 +39,9 @@ class ProjectRepositoryTest {
             audioMimeType = "audio/mp4a-latm",
         ),
         timeline = TimelineState(10_000, 45_000, zoom = 2.5f),
-        transcript = Transcript(
-            language = "en",
-            words = listOf(Word("hello", 10_500, 10_800, 0.93f), Word("world.", 10_900, 11_200, 0.91f)),
-            segments = listOf(com.shortsclipper.model.Segment("hello world.", 10_500, 11_200)),
-        ),
         audioEnvelope = listOf(0.1f, 0.5f, 0.3f),
         detectedSilences = listOf(SilenceEdit(20_000, 21_000)),
         silenceRemovals = listOf(SilenceEdit(20_000, 21_000)),
-        candidates = listOf(
-            ClipCandidate(
-                id = "c1", startMs = 10_000, endMs = 40_000, durationMs = 30_000,
-                score = ScoreComponents(8f, 7f, 8f, 9f, 6.5f),
-                potential = 7.8f,
-                reasons = listOf("Starts with a question"),
-                title = "Hook clip",
-            ),
-        ),
-        rejectedCandidateIds = setOf("c2"),
-        selectedCandidateId = "c1",
-        targetDuration = TargetDuration.T60,
         tracking = com.shortsclipper.model.TrackingState(
             autoEnabled = true,
             targetFaceId = 3,
@@ -120,6 +98,5 @@ class ProjectRepositoryTest {
         assertEquals("My clip", project.name)
         assertTrue(project.id.isNotBlank())
         assertEquals(5L, project.createdAtMs)
-        assertEquals(TargetDuration.T30, project.targetDuration)
     }
 }

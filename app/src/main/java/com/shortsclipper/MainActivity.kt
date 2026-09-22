@@ -13,8 +13,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.shortsclipper.ui.AnalysisScreen
-import com.shortsclipper.ui.ClipsScreen
 import com.shortsclipper.ui.EditorScreen
 import com.shortsclipper.ui.EditorViewModel
 import com.shortsclipper.ui.ExportScreen
@@ -25,8 +23,6 @@ import com.shortsclipper.ui.theme.ShortsClipperTheme
 sealed interface Screen {
     data object Home : Screen
     data object Editor : Screen
-    data object Analysis : Screen
-    data object Clips : Screen
     data object Export : Screen
 }
 
@@ -60,18 +56,7 @@ fun AppRoot(viewModel: EditorViewModel = viewModel()) {
         )
         Screen.Editor -> EditorScreen(
             viewModel = viewModel,
-            onOpenAnalysis = { go(Screen.Analysis) },
-            onOpenClips = { go(Screen.Clips) },
             onOpenExport = { go(Screen.Export) },
-            onClose = { back() },
-        )
-        Screen.Analysis -> AnalysisScreen(
-            viewModel = viewModel,
-            onOpenClips = { go(Screen.Clips) },
-            onClose = { back() },
-        )
-        Screen.Clips -> ClipsScreen(
-            viewModel = viewModel,
             onClose = { back() },
         )
         Screen.Export -> ExportScreen(

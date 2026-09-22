@@ -14,24 +14,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
-        ndk {
-            // arm64-v8a: real devices. x86_64: emulator testing.
-            abiFilters += listOf("arm64-v8a", "x86_64")
-        }
-        externalNativeBuild {
-            cmake {
-                cppFlags += listOf("-std=c++17", "-O3")
-                arguments += listOf("-DANDROID_STL=c++_shared")
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/native/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     buildTypes {
@@ -85,9 +67,6 @@ dependencies {
 
     // On-device face detection (bundled, no Google Play services required, no cloud)
     implementation("com.google.mlkit:face-detection:16.1.6")
-
-    // Local transcription: whisper.cpp via JNI (native sources under src/main/native)
-    // Model files are managed at runtime by ModelManager (official whisper.cpp ggml models).
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
