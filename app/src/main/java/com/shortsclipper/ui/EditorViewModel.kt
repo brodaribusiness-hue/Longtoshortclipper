@@ -556,7 +556,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 lastFaceBoxTimeMs = prepared.firstDetectionTimeMs ?: Long.MIN_VALUE
 
                 if (defaultTrack == null || prepared.decodedFrameCount == 0) {
-                    commit {
+                    commit(mutate = {
                         it.copy(
                             tracking = it.tracking.copy(
                                 autoEnabled = false,
@@ -565,11 +565,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                                 detectedFaces = emptyList(),
                             ),
                         )
-                    }
+                    })
                     trackingError.value = "No face was found in this selected range. You can still reframe it manually."
                 } else {
                     val faceId = defaultTrack.first().faceId
-                    commit {
+                    commit(mutate = {
                         it.copy(
                             tracking = it.tracking.copy(
                                 autoEnabled = true,
@@ -578,14 +578,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                                 autoPath = path,
                             ),
                         )
-                    }
+                    })
                     updateFaceSelectionBoxes(playheadMs.value, force = true)
                 }
             } catch (_: CancellationException) {
                 // Explicit cancellation is expected and leaves existing manual
                 // framing untouched. Native decoder/detector resources close in FaceTracker.
             } catch (t: Throwable) {
-                commit { it.copy(tracking = it.tracking.copy(autoEnabled = false)) }
+                commit(mutate = { it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
                 trackingError.value = "Face tracking failed: ${t.message ?: "unsupported video decoder"}"
             } finally {
                 trackingPassProgress.value = -1f
@@ -608,13 +608,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         // A retained path from an earlier pass remains usable after cancelling
         // a rescan, so it is deliberately preserved.
         if (_state.value.tracking.autoEnabled && _state.value.tracking.autoPath.isEmpty()) {
-            commit { current ->
+            commit(mutate = { current ->
                 if (current.tracking.autoPath.isEmpty()) {
                     current.copy(tracking = current.tracking.copy(autoEnabled = false))
                 } else {
                     current
                 }
-            }
+            })
         }
     }
 
@@ -639,7 +639,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             // A newer face choice, rescan, cancellation or project replacement
             // wins over this worker result.
             if (generation != trackingPathGeneration.get() || _state.value.source?.uri != sourceUri) return@launch
-            commit {
+            commit(mutate = {
                 it.copy(
                     tracking = it.tracking.copy(
                         autoEnabled = true,
@@ -647,7 +647,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         autoPath = path,
                     ),
                 )
-            }
+            })
             updateFaceSelectionBoxes(playheadMs.value, force = true)
         }
     }
@@ -658,7 +658,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val track = selectedId?.let { TrackingEngine.trackById(rawTracks, it) }
         // Update the selected preset promptly; the potentially large path is
         // then regenerated on a worker without blocking the Compose UI.
-        commit { it.copy(tracking = it.tracking.copy(smoothing = preset)) }
+        commit(mutate = { it.copy(tracking = it.tracking.copy(smoothing = preset)) })
         if (track == null || selectedId == null) return
 
         val sourceUri = current.source?.uri
@@ -669,7 +669,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             if (generation != trackingPathGeneration.get() || latest.source?.uri != sourceUri ||
                 latest.tracking.targetFaceId != selectedId || latest.tracking.smoothing != preset
             ) return@launch
-            commit { it.copy(tracking = it.tracking.copy(autoPath = path)) }
+            commit(mutate = { it.copy(tracking = it.tracking.copy(autoPath = path)) })
             updateFaceSelectionBoxes(playheadMs.value, force = true)
         }
     }

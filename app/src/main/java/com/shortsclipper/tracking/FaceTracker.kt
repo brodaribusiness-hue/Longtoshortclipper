@@ -113,7 +113,7 @@ class FaceTracker(private val context: Context) {
                 .enableTracking()
                 .build(),
         )
-        try {
+        return try {
             val samples = ArrayList<Pair<Long, List<FaceBox>>>()
             var lastStoredTime = Long.MIN_VALUE
             var hadFaces: Boolean? = null
