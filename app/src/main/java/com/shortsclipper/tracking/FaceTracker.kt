@@ -54,7 +54,8 @@ class FaceTracker(private val context: Context) {
             val durationSpan = endMs - startMs
             val effectiveInterval = when {
                 sampleIntervalMs != TrackingSmoother.SAMPLE_INTERVAL_MS -> sampleIntervalMs
-                durationSpan > 300_000L -> 1200L // > 5 minutes: 1.2s intervals to protect thermals & battery
+                durationSpan > 900_000L -> 2000L // > 15 minutes: 2.0s intervals for long video thermal safety
+                durationSpan > 300_000L -> 1200L // 5 to 15 minutes: 1.2s intervals to protect thermals & battery
                 durationSpan > 60_000L -> 500L   // 1 to 5 minutes: 500ms intervals
                 else -> TrackingSmoother.SAMPLE_INTERVAL_MS // <= 1 minute: 250ms responsive tracking
             }

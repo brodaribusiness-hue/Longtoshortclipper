@@ -91,15 +91,25 @@ class ExportManager(private val context: Context) {
      * Uses universal 720p H.264 profile with bounded bitrate.
      */
     fun computeFallbackPlan(plan: ExportPlan): ExportPlan? {
-        if (plan.videoMimeType != "video/avc" || plan.outHeight > 1280 || plan.videoBitrateBps > 6_000_000) {
+        if (plan.videoMimeType != "video/avc" || plan.outHeight > 1280 || plan.videoBitrateBps > 4_000_000) {
             val fallbackH = minOf(plan.outHeight, 1280)
             val fallbackW = evenDown((fallbackH * CropCalculator.TARGET_ASPECT).roundToInt()).coerceAtLeast(176)
-            val fallbackBitrate = minOf(plan.videoBitrateBps, 6_000_000)
+            val fallbackBitrate = minOf(plan.videoBitrateBps, 4_000_000)
             return ExportPlan(
                 outWidth = fallbackW,
                 outHeight = fallbackH,
                 videoMimeType = "video/avc",
                 videoBitrateBps = fallbackBitrate,
+                segments = plan.segments,
+            )
+        } else if (plan.outHeight > 720) {
+            val fallbackH = 720
+            val fallbackW = evenDown((fallbackH * CropCalculator.TARGET_ASPECT).roundToInt()).coerceAtLeast(176)
+            return ExportPlan(
+                outWidth = fallbackW,
+                outHeight = fallbackH,
+                videoMimeType = "video/avc",
+                videoBitrateBps = 2_500_000,
                 segments = plan.segments,
             )
         }
@@ -113,7 +123,11 @@ class ExportManager(private val context: Context) {
         candidates.add("video/hevc")
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
         return candidates.firstOrNull { candidate ->
-            list.codecInfos.any { info -> info.isEncoder && info.supportedTypes.contains(candidate) }
+            list.codecInfos.any { info ->
+                info.isEncoder && info.supportedTypes.contains(candidate) && runCatching {
+                    info.getCapabilitiesForType(candidate) != null
+                }.getOrDefault(false)
+            }
         } ?: "video/avc"
     }
 

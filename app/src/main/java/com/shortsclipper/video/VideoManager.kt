@@ -210,6 +210,7 @@ object VideoManager {
             var sawOutputEos = false
             var decodedUs = 0L
             val durationUs = runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
+            var consecutiveTimeouts = 0
 
             while (!sawOutputEos) {
                 if (isCancelled()) {
@@ -233,13 +234,24 @@ object VideoManager {
                 }
                 val outIndex = codec.dequeueOutputBuffer(info, 10_000)
                 when {
+                    outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                        if (sawInputEos) {
+                            consecutiveTimeouts++
+                            if (consecutiveTimeouts > 60) {
+                                // Decoder drained all available samples after EOS
+                                break
+                            }
+                        }
+                    }
                     outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        consecutiveTimeouts = 0
                         val of = codec.outputFormat
                         srcSampleRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                         srcChannels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         resampler = StreamResampler(srcSampleRate, TARGET_SAMPLE_RATE)
                     }
                     outIndex >= 0 -> {
+                        consecutiveTimeouts = 0
                         val outBuffer = codec.getOutputBuffer(outIndex)!!
                         if (info.size > 0) {
                             val shortBuffer = outBuffer.order(ByteOrder.nativeOrder()).asShortBuffer()

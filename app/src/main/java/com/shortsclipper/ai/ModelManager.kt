@@ -58,6 +58,13 @@ class ModelManager(private val context: Context) {
         return am.isLowRamDevice || memInfo.totalMem <= 3L * 1024 * 1024 * 1024
     }
 
+    fun getAvailableRamMB(): Long {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return 1024L
+        val memInfo = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+        return memInfo.availMem / (1024 * 1024)
+    }
+
     val modelsDir: File
         get() = File(context.filesDir, "whisper_models").apply { mkdirs() }
 
@@ -103,8 +110,10 @@ class ModelManager(private val context: Context) {
     }
 
     fun freeSpaceMB(): Long {
-        val stat = android.os.StatFs(context.filesDir.absolutePath)
-        return stat.availableBytes / (1024 * 1024)
+        return runCatching {
+            val stat = android.os.StatFs(context.filesDir.absolutePath)
+            stat.availableBytes / (1024 * 1024)
+        }.getOrDefault(1024L)
     }
 
     fun delete(info: ModelInfo): Boolean {

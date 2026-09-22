@@ -4,7 +4,10 @@
     <!-- Internet is used ONLY to download open-source whisper.cpp models on explicit user action.
          All video/audio processing, transcription, analysis and export run fully on-device. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Legacy gallery save on Android 9 and below only. -->
+    <!-- Legacy read/write on older Android versions. Modern Android (10+) uses Scoped Storage / SAF. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />

@@ -493,6 +493,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
                 // 2. Transcribe (local whisper.cpp) + 3. word timestamps.
                 step(AnalysisStep.TRANSCRIBE, StepState.RUNNING)
+                if (modelManager.isLowRamDevice() || modelManager.getAvailableRamMB() < 350L) {
+                    if (preferredModel.value.approxSizeMB > 100) {
+                        val tiny = ModelManager.CATALOG.find { it.id == "tiny" }
+                        if (tiny != null && modelManager.isInstalled(tiny)) {
+                            setPreferredModel(tiny)
+                        }
+                    }
+                }
                 if (!modelManager.isInstalled(preferredModel.value)) {
                     val alternate = ModelManager.CATALOG.find { modelManager.isInstalled(it) }
                     if (alternate != null) {
@@ -733,6 +741,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        analysisCancelled.set(true)
+        exportCancelled.set(true)
+        trackingCancelled.set(true)
         analysisJob?.cancel()
         exportJob?.cancel()
         trackingJob?.cancel()
