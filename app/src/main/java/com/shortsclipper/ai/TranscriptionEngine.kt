@@ -26,7 +26,7 @@ class TranscriptionEngine {
         private const val SAMPLE_RATE = 16000
         private const val WINDOW_SECONDS = 30
         private const val OVERLAP_SECONDS = 1.5
-        private const val MAX_THREADS = 4
+        const val MAX_THREADS = 4
     }
 
     private val json = Json { ignoreUnknownKeys = true }
