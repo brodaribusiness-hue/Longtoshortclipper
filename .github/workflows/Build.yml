@@ -68,9 +68,9 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -no-metrics
           disable-animations: true
-          script: |
-            set -o pipefail
-            ./gradlew --no-daemon connectedDebugAndroidTest --stacktrace 2>&1 | tee -a build_output.log
+          # android-emulator-runner executes this through /bin/sh; explicitly
+          # select Bash because dash does not implement `set -o pipefail`.
+          script: bash -o pipefail -c './gradlew --no-daemon connectedDebugAndroidTest --stacktrace 2>&1 | tee -a build_output.log'
 
       # Preserve focused diagnostics in the job summary and add one meaningful
       # check annotation. Do not turn successful Gradle task lines into errors:
