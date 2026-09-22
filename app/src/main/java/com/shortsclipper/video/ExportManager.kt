@@ -318,6 +318,7 @@ class ExportManager(private val context: Context) {
             when (uri.scheme?.lowercase()) {
                 "content" -> context.contentResolver.delete(uri, null, null)
                 "file" -> uri.path?.let(::File)?.delete()
+                else -> Unit
             }
         }
     }

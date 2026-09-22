@@ -749,7 +749,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val original = _state.value.transcript?.segments?.firstOrNull {
             it.startTimeMs == segmentStartMs && it.endTimeMs == segmentEndMs
         } ?: return
-        val cleaned = text.replace(Regex("\s+"), " ").trim().take(240)
+        val cleaned = text.replace(Regex("\\s+"), " ").trim().take(240)
         commit({ current ->
             val existing = current.captionEdits.filterNot {
                 it.startTimeMs == segmentStartMs && it.endTimeMs == segmentEndMs
