@@ -805,13 +805,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     audioPreparationError.value = "This video has no audio track, so silence detection is unavailable."
                     return@launch
                 }
-                commit {
+                commit(mutate = {
                     it.copy(
                         audioEnvelope = decoded.envelope,
                         audioStartMs = decoded.startTimeMs,
                         envelopeStepMs = SilenceDetector.STEP_MS,
                     )
-                }
+                })
             } catch (_: CancellationException) {
                 // Cancellation is expected when the source/project changes.
             } catch (t: Throwable) {
