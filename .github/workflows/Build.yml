@@ -13,13 +13,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -37,29 +37,72 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
-            "ndk;26.3.11579264" "cmake;3.22.1"
+            "ndk;26.3.11579264" "cmake;3.22.1" \
+            "emulator" "system-images;android-30;google_apis;x86_64"
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
 
       - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v5
 
-      - name: Build debug APK and run unit tests
+      - name: Build debug APK and run JVM unit tests
         run: |
           set -o pipefail
           ./gradlew --no-daemon assembleDebug testDebugUnitTest --stacktrace 2>&1 | tee build_output.log
 
-      # Surface the useful Gradle/compiler tail as check annotations as well as
-      # an artifact. This keeps failures diagnosable when artifact/log blob
-      # downloads are unavailable from a restricted network.
+      - name: Run Android emulator smoke tests
+        env:
+          AVD_NAME: shortsclipper-api30
+        run: |
+          set -euo pipefail
+          AVD_MANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          EMULATOR="$ANDROID_HOME/emulator/emulator"
+          IMAGE="system-images;android-30;google_apis;x86_64"
+
+          mkdir -p "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          echo "no" | "$AVD_MANAGER" create avd --force --name "$AVD_NAME" --package "$IMAGE"
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+          "$EMULATOR" -avd "$AVD_NAME" -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -no-snapshot -no-metrics > /tmp/android-emulator.log 2>&1 &
+          emulator_pid=$!
+          trap '"$ADB" emu kill >/dev/null 2>&1 || true; kill "$emulator_pid" >/dev/null 2>&1 || true' EXIT
+
+          timeout 240 "$ADB" wait-for-device
+          booted=false
+          for _ in $(seq 1 180); do
+            if [ "$("$ADB" shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; then
+              booted=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$booted" != true ]; then
+            cat /tmp/android-emulator.log
+            exit 1
+          fi
+          "$ADB" shell input keyevent 82
+          "$ADB" shell settings put global window_animation_scale 0
+          "$ADB" shell settings put global transition_animation_scale 0
+          "$ADB" shell settings put global animator_duration_scale 0
+          set -o pipefail
+          ./gradlew --no-daemon connectedDebugAndroidTest --stacktrace 2>&1 | tee -a build_output.log
+
+      # Surface useful Gradle/compiler output as check annotations as well as an
+      # artifact. This keeps failures diagnosable from restricted networks where
+      # GitHub Actions raw-log or artifact blob downloads are unavailable.
       - name: Surface Android build diagnostics
         if: failure()
         run: |
           set +e
           {
-            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:" build_output.log 2>/dev/null | tail -80
+            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:" build_output.log 2>/dev/null | tail -100
             echo "--- build log tail ---"
-            tail -80 build_output.log 2>/dev/null
+            tail -100 build_output.log 2>/dev/null
+            echo "--- emulator log tail ---"
+            tail -80 /tmp/android-emulator.log 2>/dev/null
           } > /tmp/build-diagnostics.txt
           while IFS= read -r line; do
             [ -z "$line" ] || echo "::error title=Android build diagnostics::$line"
@@ -74,7 +117,7 @@ jobs:
 
       - name: Upload debug APK
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shortsclipper-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -82,7 +125,7 @@ jobs:
 
       - name: Upload unsigned release APK
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shortsclipper-release-apk
           path: app/build/outputs/apk/release/app-release-unsigned.apk
@@ -90,10 +133,13 @@ jobs:
 
       - name: Upload test and build logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-and-test-results
           path: |
             app/build/test-results/
+            app/build/outputs/androidTest-results/
+            app/build/reports/androidTests/
             build_output.log
+            /tmp/android-emulator.log
           if-no-files-found: ignore

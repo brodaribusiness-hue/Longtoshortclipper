@@ -87,13 +87,15 @@ app/src/main/
 Requirements: JDK 17, Android SDK (platform 34, build-tools 34), NDK 26.3.11579264, CMake 3.22.1.
 
 ```bash
-./gradlew assembleDebug          # debug APK (installable)
-./gradlew testDebugUnitTest      # JVM unit tests
-./gradlew assembleRelease        # unsigned release APK
+./gradlew assembleDebug                 # debug APK (installable)
+./gradlew testDebugUnitTest             # JVM unit tests
+./gradlew connectedDebugAndroidTest      # Android emulator/device smoke tests
+./gradlew assembleRelease                # unsigned release APK
 ```
 
-Or simply push — **GitHub Actions builds debug+release and runs the tests automatically**
-(`.github/workflows/Build.yml`); APKs are uploaded as workflow artifacts.
+Or simply push — **GitHub Actions builds debug+release, runs JVM tests, and boots an API 30
+x86_64 emulator for an offline app/JNI smoke test** (`.github/workflows/Build.yml`); APKs are
+uploaded as workflow artifacts.
 
 Install on a device: `adb install app/build/outputs/apk/debug/app-debug.apk`.
 
@@ -114,4 +116,4 @@ official whisper.cpp repository, or import a local `.bin` model. Transcription i
   exotic source containers are decoded and re-encoded rather than remuxed because 9:16 reframing requires it.
 - Face tracking analyzes every sequential decoder frame, but extreme motion can still challenge a fast
   on-device detector; use the Responsive preset or manual keyframes for creative corrections.
-- CI/test coverage is JVM-level (logic). No emulator-based instrumented tests run in this environment.
+- CI runs JVM logic tests plus an API 30 x86_64 emulator smoke test (app launch and packaged Whisper JNI load). Real-device validation is still recommended for vendor-specific MediaCodec, ML Kit, gallery and 90°/270° source behavior.

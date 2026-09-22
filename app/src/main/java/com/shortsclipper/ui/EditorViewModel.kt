@@ -72,6 +72,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val projectListGeneration = AtomicLong(0L)
     /** Ensures stale disk reads/imports cannot replace a newer user choice. */
     private val projectOpenGeneration = AtomicLong(0L)
+    /** Invalidates callbacks from jobs that belonged to a replaced project. */
+    private val projectSessionGeneration = AtomicLong(0L)
     private val candidateGeneration = AtomicLong(0L)
 
     // Transient playback state (not part of undo history).
@@ -117,6 +119,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val trackingCancelled = AtomicBoolean(false)
     /** Invalidates worker smoothing/selection calculations when their raw path changes. */
     private val trackingPathGeneration = AtomicLong(0L)
+    /** Keeps stale analysis/export/tracking callbacks out of a newer UI session. */
+    private val analysisRunGeneration = AtomicLong(0L)
+    private val exportRunGeneration = AtomicLong(0L)
+    private val trackingPassGeneration = AtomicLong(0L)
 
     val preferredModel = MutableStateFlow(ModelManager.CATALOG[1]) // base
 
@@ -127,6 +133,18 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // ---------------------------------------------------------------- state
+
+    /**
+     * Worker jobs keep their own immutable input snapshots. Do not let an old
+     * decoder/transcriber/export callback overwrite runtime state after the
+     * user opened, imported, or deleted a different project.
+     */
+    private fun isCurrentProjectSession(session: Long, snapshot: ProjectState): Boolean {
+        val current = _state.value
+        return session == projectSessionGeneration.get() &&
+            current.id == snapshot.id &&
+            current.source?.uri == snapshot.source?.uri
+    }
 
     private fun commit(mutate: (ProjectState) -> ProjectState, tag: String? = null, coalesceMs: Long = 0L) {
         synchronized(stateLock) {
@@ -187,6 +205,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun stopProjectWork() {
+        // Invalidate state/progress callbacks before asking workers to stop.
+        // MediaCodec, ML Kit and native Whisper can finish a callback after a
+        // coroutine has been cancelled, especially during project replacement.
+        analysisRunGeneration.incrementAndGet()
+        trackingPassGeneration.incrementAndGet()
+        exportRunGeneration.incrementAndGet()
         analysisCancelled.set(true)
         transcriptionEngine.cancel()
         analysisJob?.cancel()
@@ -207,6 +231,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun replaceProject(project: ProjectState) {
+        projectSessionGeneration.incrementAndGet()
         stopProjectWork()
         player?.pause()
         autosaveJob?.cancel()
@@ -453,6 +478,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun startFaceDetectionPass() {
         val snapshot = _state.value
         val source = snapshot.source ?: return
+        val projectSession = projectSessionGeneration.get()
+        // Each user request gets a token. A decoder can report progress/error
+        // after cancellation, so a token is stronger than relying on Job state.
+        val passGeneration = trackingPassGeneration.incrementAndGet()
         // A manually requested rescan supersedes any worker path calculation
         // based on the previous raw tracks, even while the old decoder drains.
         trackingPathGeneration.incrementAndGet()
@@ -472,7 +501,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 // were a second user request.
                 trackingRestartJob = null
                 val current = _state.value
-                if (current.id == snapshot.id && current.source?.uri == source.uri &&
+                if (projectSession == projectSessionGeneration.get() &&
+                    current.id == snapshot.id && current.source?.uri == source.uri &&
                     current.timeline.selectionStartMs == snapshot.timeline.selectionStartMs &&
                     current.timeline.selectionEndMs == snapshot.timeline.selectionEndMs
                 ) {
@@ -487,16 +517,28 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         trackingError.value = null
         trackingPassProgress.value = 0f
         trackingJob = viewModelScope.launch {
+            fun isCurrentPass(): Boolean {
+                val current = _state.value
+                return passGeneration == trackingPassGeneration.get() &&
+                    !trackingCancelled.get() &&
+                    isCurrentProjectSession(projectSession, snapshot) &&
+                    current.timeline.selectionStartMs == snapshot.timeline.selectionStartMs &&
+                    current.timeline.selectionEndMs == snapshot.timeline.selectionEndMs
+            }
+
             try {
+                if (!isCurrentPass()) return@launch
                 val result = faceTracker.detectOverRange(
                     uri = Uri.parse(source.uri),
                     startMs = snapshot.timeline.selectionStartMs,
                     endMs = snapshot.timeline.selectionEndMs,
                     rotationDegrees = source.rotationDegrees,
-                    onProgress = { progress -> trackingPassProgress.value = progress },
+                    onProgress = { progress ->
+                        if (isCurrentPass()) trackingPassProgress.value = progress
+                    },
                     isCancelled = { trackingCancelled.get() },
                 )
-                if (trackingCancelled.get()) throw CancellationException("Face tracking cancelled")
+                if (!isCurrentPass()) throw CancellationException("Face tracking cancelled")
 
                 // Association can walk tens of thousands of retained points on
                 // long clips. Keep it off the UI dispatcher just like decoding;
@@ -515,26 +557,19 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         decodedFrameCount = result.decodedFrameCount,
                     )
                 }
-                if (trackingCancelled.get()) throw CancellationException("Face tracking cancelled")
-
-                // A timeline/project replacement during any asynchronous phase
-                // must never install detections into the newer project.
-                fun snapshotIsCurrent(current: ProjectState): Boolean =
-                    current.id == snapshot.id && current.source?.uri == source.uri &&
-                        current.timeline.selectionStartMs == snapshot.timeline.selectionStartMs &&
-                        current.timeline.selectionEndMs == snapshot.timeline.selectionEndMs
+                if (!isCurrentPass()) throw CancellationException("Face tracking cancelled")
 
                 var current = _state.value
-                if (!snapshotIsCurrent(current)) return@launch
+                if (!isCurrentPass()) return@launch
 
                 val defaultTrack = prepared.defaultTrack
                 val smoothing = current.tracking.smoothing
                 var path = defaultTrack?.let { track ->
                     withContext(Dispatchers.Default) { smoothTrack(track, smoothing) }
                 }.orEmpty()
-                if (trackingCancelled.get()) throw CancellationException("Face tracking cancelled")
+                if (!isCurrentPass()) throw CancellationException("Face tracking cancelled")
                 current = _state.value
-                if (!snapshotIsCurrent(current)) return@launch
+                if (!isCurrentPass()) return@launch
 
                 // Honor a smoothing choice made while association was running.
                 // The second worker calculation is rare, but prevents the UI
@@ -543,9 +578,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     path = withContext(Dispatchers.Default) {
                         smoothTrack(defaultTrack, current.tracking.smoothing)
                     }
-                    if (trackingCancelled.get()) throw CancellationException("Face tracking cancelled")
+                    if (!isCurrentPass()) throw CancellationException("Face tracking cancelled")
                     current = _state.value
-                    if (!snapshotIsCurrent(current)) return@launch
+                    if (!isCurrentPass()) return@launch
                 }
 
                 // Supersede any asynchronous re-smoothing request that was
@@ -585,15 +620,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 // Explicit cancellation is expected and leaves existing manual
                 // framing untouched. Native decoder/detector resources close in FaceTracker.
             } catch (t: Throwable) {
-                commit(mutate = { it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
-                trackingError.value = "Face tracking failed: ${t.message ?: "unsupported video decoder"}"
+                if (isCurrentPass()) {
+                    commit(mutate = { it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
+                    trackingError.value = "Face tracking failed: ${t.message ?: "unsupported video decoder"}"
+                }
             } finally {
-                trackingPassProgress.value = -1f
+                if (passGeneration == trackingPassGeneration.get()) {
+                    trackingPassProgress.value = -1f
+                }
             }
         }
     }
 
     fun cancelFaceDetectionPass() {
+        trackingPassGeneration.incrementAndGet()
         trackingCancelled.set(true)
         trackingPathGeneration.incrementAndGet()
         trackingRestartJob?.cancel()
@@ -772,9 +812,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val s = _state.value
         val source = s.source ?: return
         if (analysisJob?.isActive == true) return
+        val projectSession = projectSessionGeneration.get()
+        val runGeneration = analysisRunGeneration.incrementAndGet()
+        fun isCurrentAnalysisRun(): Boolean =
+            runGeneration == analysisRunGeneration.get() && isCurrentProjectSession(projectSession, s)
+        fun finish(message: String?) {
+            if (isCurrentAnalysisRun()) runCatching { onFinished(message) }
+        }
         analysisCancelled.set(false)
 
         fun step(step: AnalysisStep, state: StepState, progress: Float? = null, message: String? = null) {
+            if (!isCurrentAnalysisRun()) return
             analysisState.value = analysisState.value.copy(
                 phase = if (state == StepState.FAILED) AnalysisPhase.FAILED else AnalysisPhase.RUNNING,
                 stepStates = analysisState.value.stepStates + (step to state),
@@ -785,6 +833,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         fun resetAll() {
+            if (!isCurrentAnalysisRun()) return
             analysisState.value = AnalysisState(
                 phase = AnalysisPhase.RUNNING,
                 stepStates = AnalysisStep.entries.associateWith { StepState.PENDING },
@@ -798,6 +847,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             var runPcmFile: File? = null
             try {
                 resetAll()
+                if (!isCurrentAnalysisRun()) return@launch
 
                 // 1. Prepare audio (decode + envelope).
                 step(AnalysisStep.PREPARE_AUDIO, StepState.RUNNING)
@@ -811,17 +861,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         isCancelled = { analysisCancelled.get() },
                     )
                 }
-                if (analysisCancelled.get()) throw InterruptedException()
+                if (analysisCancelled.get() || !isCurrentAnalysisRun()) throw InterruptedException()
                 if (decoded == null) {
                     // No audio track: transcription impossible, manual editing still works.
                     step(AnalysisStep.PREPARE_AUDIO, StepState.DONE)
                     step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "This video has no audio track, so transcription and AI clip suggestions are unavailable. Manual clipping, reframing and tracking still work.")
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE)
-                    onFinished("This video has no audio track - AI analysis needs audio.")
+                    if (isCurrentAnalysisRun()) {
+                        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE)
+                    }
+                    finish("This video has no audio track - AI analysis needs audio.")
                     return@launch
                 }
                 runPcmFile = decoded.pcmFile
                 pcmFile = runPcmFile
+                if (!isCurrentAnalysisRun()) throw InterruptedException()
                 commit({
                     it.copy(
                         audioEnvelope = decoded.envelope,
@@ -837,10 +890,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val modelInstalled = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     modelManager.isInstalled(selectedModel)
                 }
+                if (!isCurrentAnalysisRun()) throw InterruptedException()
                 if (!modelInstalled) {
                     step(AnalysisStep.TRANSCRIBE, StepState.FAILED, message = "No transcription model installed. Open Model Manager on the home screen and download one (one-time, ~${selectedModel.approxSizeMB} MB).")
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
-                    onFinished("No transcription model installed")
+                    if (isCurrentAnalysisRun()) {
+                        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
+                    }
+                    finish("No transcription model installed")
                     return@launch
                 }
                 // Structural + checksum validation happens immediately before
@@ -848,7 +904,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 // handed to whisper.cpp merely because it looked installed.
                 val modelFile = modelManager.validatedModelFile(
                     selectedModel,
-                    isCancelled = { analysisCancelled.get() },
+                    isCancelled = { analysisCancelled.get() || !isCurrentAnalysisRun() },
                 )
                 val transcript = transcriptionEngine.transcribe(
                     pcmFile = decoded.pcmFile,
@@ -859,15 +915,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     onProgress = { p ->
                         step(AnalysisStep.TRANSCRIBE, StepState.RUNNING, p)
                     },
-                    isCancelled = { analysisCancelled.get() },
+                    isCancelled = { analysisCancelled.get() || !isCurrentAnalysisRun() },
                 )
-                if (analysisCancelled.get()) throw InterruptedException()
+                if (analysisCancelled.get() || !isCurrentAnalysisRun()) throw InterruptedException()
                 step(AnalysisStep.TRANSCRIBE, StepState.DONE, 1f)
 
                 if (transcript.words.isEmpty()) {
                     step(AnalysisStep.WORD_TIMESTAMPS, StepState.FAILED, message = "No speech was detected in this video.")
-                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
-                    onFinished("No speech detected")
+                    if (isCurrentAnalysisRun()) {
+                        analysisState.value = analysisState.value.copy(phase = AnalysisPhase.FAILED)
+                    }
+                    finish("No speech detected")
                     return@launch
                 }
                 step(AnalysisStep.WORD_TIMESTAMPS, StepState.DONE, 1f)
@@ -890,6 +948,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     ClipGenerator.generate(sentences, anchors, source.durationMs, s.targetDuration)
                 }
                 step(AnalysisStep.SCORE, StepState.DONE, 1f)
+                if (!isCurrentAnalysisRun()) throw InterruptedException()
 
                 step(AnalysisStep.GENERATE, StepState.RUNNING)
                 commit({
@@ -901,20 +960,28 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 })
                 step(AnalysisStep.GENERATE, StepState.DONE, 1f)
-                analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE, activeStep = null)
-                onFinished(if (candidates.isEmpty()) "No strong candidate moments found - adjust the clip manually." else null)
+                if (isCurrentAnalysisRun()) {
+                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.DONE, activeStep = null)
+                }
+                finish(if (candidates.isEmpty()) "No strong candidate moments found - adjust the clip manually." else null)
             } catch (_: InterruptedException) {
-                analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
+                if (isCurrentAnalysisRun()) {
+                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
+                }
             } catch (_: CancellationException) {
-                analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
+                if (isCurrentAnalysisRun()) {
+                    analysisState.value = analysisState.value.copy(phase = AnalysisPhase.IDLE, activeStep = null)
+                }
             } catch (t: Throwable) {
-                val msg = t.message ?: "Analysis failed"
-                analysisState.value = analysisState.value.copy(
-                    phase = AnalysisPhase.FAILED,
-                    error = msg,
-                    activeStep = null,
-                )
-                onFinished(msg)
+                if (isCurrentAnalysisRun()) {
+                    val msg = t.message ?: "Analysis failed"
+                    analysisState.value = analysisState.value.copy(
+                        phase = AnalysisPhase.FAILED,
+                        error = msg,
+                        activeStep = null,
+                    )
+                    finish(msg)
+                }
             } finally {
                 // The envelope is persisted in ProjectState; retaining decoded
                 // PCM after analysis only wastes private app storage.
@@ -928,6 +995,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun cancelAnalysis() {
+        analysisRunGeneration.incrementAndGet()
         analysisCancelled.set(true)
         transcriptionEngine.cancel()
         analysisJob?.cancel()
@@ -1037,24 +1105,33 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun startExport(onDone: (String?) -> Unit = {}) {
         val exportSnapshot = _state.value
         if (exportSnapshot.source == null || exportJob?.isActive == true) return
+        val projectSession = projectSessionGeneration.get()
+        val runGeneration = exportRunGeneration.incrementAndGet()
         exportCancelled.set(false)
         exportJob = viewModelScope.launch {
+            fun isCurrentExportRun(): Boolean =
+                runGeneration == exportRunGeneration.get() && isCurrentProjectSession(projectSession, exportSnapshot)
+
             val startedAt = System.currentTimeMillis()
             var ticker: Job? = null
             var outFile: File? = null
             var savedOutputUri: Uri? = null
+            if (!isCurrentExportRun()) return@launch
             exportState.value = ExportState(phase = ExportPhase.PREPARING)
             try {
                 val plan = withContext(kotlinx.coroutines.Dispatchers.Default) {
                     exportManager.computePlan(exportSnapshot)
                 }
+                if (!isCurrentExportRun()) throw CancellationException("Export superseded")
                 val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
                 outFile = File(outDir, ".shortsclipper_${System.currentTimeMillis()}.tmp.mp4")
-                exportState.value = exportState.value.copy(phase = ExportPhase.TRANSFORMING, progressPercent = 0)
+                if (isCurrentExportRun()) {
+                    exportState.value = exportState.value.copy(phase = ExportPhase.TRANSFORMING, progressPercent = 0)
+                }
                 ticker = launch {
                     while (isActive) {
                         delay(500)
-                        if (exportState.value.isBusy) {
+                        if (isCurrentExportRun() && exportState.value.isBusy) {
                             exportState.value = exportState.value.copy(elapsedMs = System.currentTimeMillis() - startedAt)
                         }
                     }
@@ -1064,21 +1141,30 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     plan = plan,
                     outFile = requireNotNull(outFile),
                     onProgress = { progress ->
-                        exportState.value = exportState.value.copy(progressPercent = progress.coerceIn(0, 100))
+                        if (isCurrentExportRun()) {
+                            exportState.value = exportState.value.copy(progressPercent = progress.coerceIn(0, 100))
+                        }
                     },
-                    isCancelled = { exportCancelled.get() },
+                    isCancelled = { exportCancelled.get() || !isCurrentExportRun() },
                 )
-                if (exportCancelled.get()) throw com.shortsclipper.video.ExportCancelledException()
+                if (exportCancelled.get() || !isCurrentExportRun()) {
+                    throw com.shortsclipper.video.ExportCancelledException()
+                }
                 exportState.value = exportState.value.copy(phase = ExportPhase.SAVING, progressPercent = 100)
-                val outputUri = withContext(Dispatchers.IO) {
+                val outputUri = withContext(NonCancellable + Dispatchers.IO) {
                     exportManager.saveToGallery(
                         sourceFile = exported,
                         displayName = "ShortsClipper_${exportSnapshot.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")}_${System.currentTimeMillis()}.mp4",
-                        isCancelled = { exportCancelled.get() },
+                        isCancelled = { exportCancelled.get() || !isCurrentExportRun() },
                     )
                 }
+                // NonCancellable above guarantees a URI returned after Gallery
+                // publication is retained here, so the cancellation branch can
+                // delete it instead of leaking a completed file to the user.
                 savedOutputUri = outputUri
-                if (exportCancelled.get()) throw com.shortsclipper.video.ExportCancelledException()
+                if (exportCancelled.get() || !isCurrentExportRun()) {
+                    throw com.shortsclipper.video.ExportCancelledException()
+                }
                 exportState.value = ExportState(
                     phase = ExportPhase.DONE,
                     progressPercent = 100,
@@ -1091,18 +1177,24 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 runCatching { onDone(null) }
             } catch (_: com.shortsclipper.video.ExportCancelledException) {
                 discardCancelledGalleryOutput(savedOutputUri)
-                exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
+                if (isCurrentExportRun()) {
+                    exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
+                }
             } catch (_: CancellationException) {
                 discardCancelledGalleryOutput(savedOutputUri)
-                exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
+                if (isCurrentExportRun()) {
+                    exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
+                }
             } catch (t: Throwable) {
-                val message = friendlyExportError(t)
-                exportState.value = ExportState(
-                    phase = ExportPhase.FAILED,
-                    elapsedMs = System.currentTimeMillis() - startedAt,
-                    message = message,
-                )
-                runCatching { onDone(message) }
+                if (isCurrentExportRun()) {
+                    val message = friendlyExportError(t)
+                    exportState.value = ExportState(
+                        phase = ExportPhase.FAILED,
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                        message = message,
+                    )
+                    runCatching { onDone(message) }
+                }
             } finally {
                 ticker?.cancel()
                 outFile?.delete()

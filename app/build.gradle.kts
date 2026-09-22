@@ -20,6 +20,7 @@ android {
             // 32-bit devices, and x86_64 for emulator testing.
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++17", "-O3")
@@ -95,4 +96,10 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+
+    // Emulator smoke coverage: launch the Compose activity and load the
+    // packaged x86_64 native library, without relying on cloud services.
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }

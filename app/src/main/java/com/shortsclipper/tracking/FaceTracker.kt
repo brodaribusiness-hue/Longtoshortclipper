@@ -179,6 +179,10 @@ class FaceTracker(private val context: Context) {
         var callbackThread: HandlerThread? = null
         val queuedImages = LinkedBlockingQueue<Image>(2)
         var initialized = false
+        // Used to distinguish a scaled ImageReader/decoder startup rejection
+        // from an error after genuine tracking already began. The former gets
+        // one coded-size retry in detectOverRange for vendor compatibility.
+        var deliveredFrames = 0
         try {
             extractor.setDataSource(context, uri, null)
             val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
@@ -259,6 +263,7 @@ class FaceTracker(private val context: Context) {
                                 decoder.releaseOutputBuffer(outputIndex, true)
                                 val image = awaitImage(queuedImages, isCancelled)
                                 try {
+                                    deliveredFrames++
                                     onFrame(image, presentationTimeUs)
                                 } finally {
                                     image.close()
@@ -274,7 +279,9 @@ class FaceTracker(private val context: Context) {
         } catch (e: DecoderSetupException) {
             throw e
         } catch (t: Throwable) {
-            if (!initialized) throw DecoderSetupException("Could not initialize sequential video tracking", t)
+            if (!initialized || deliveredFrames == 0) {
+                throw DecoderSetupException("Could not start sequential video tracking", t)
+            }
             throw IllegalStateException("Face tracking stopped while decoding video: ${t.message ?: "decoder error"}", t)
         } finally {
             // Stop callbacks before draining: otherwise a just-dispatched

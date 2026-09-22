@@ -90,6 +90,7 @@ fun EditorScreen(
     val playbackError by viewModel.playbackError.collectAsState()
     val trackingProgress by viewModel.trackingPassProgress.collectAsState()
     val trackingError by viewModel.trackingError.collectAsState()
+    val previewSkipSilences by viewModel.previewSkipSilences.collectAsState()
 
     var showTrackingSheet by remember { mutableStateOf(false) }
     var showSilenceSheet by remember { mutableStateOf(false) }
@@ -292,7 +293,8 @@ fun EditorScreen(
 
         if (state.silenceRemovals.isNotEmpty()) {
             Text(
-                "Silence removal ON · edited duration ${formatTime(state.editedDurationMs)} · preview skips pauses",
+                text = "Silence removal ON · edited duration ${formatTime(state.editedDurationMs)} · " +
+                    if (previewSkipSilences) "preview skips pauses" else "preview plays the source timeline",
                 color = Success,
                 fontSize = 10.sp,
             )

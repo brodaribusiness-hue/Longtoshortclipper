@@ -31,9 +31,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.compose.ui.viewinterop.AndroidView
+import android.view.LayoutInflater
+import com.shortsclipper.R
 import com.shortsclipper.ui.EditorViewModel
 import com.shortsclipper.video.CropCalculator
 import kotlin.math.min
@@ -211,9 +212,11 @@ fun VideoPreview(
 private fun PlayerSurface(viewModel: EditorViewModel, modifier: Modifier) {
     AndroidView(
         factory = { context ->
-            PlayerView(context).apply {
-                useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            // The XML surface_type is texture_view. Unlike SurfaceView, its
+            // pixels participate in the parent Compose clip/graphicsLayer,
+            // which is essential for the transformed 9:16 WYSIWYG preview.
+            (LayoutInflater.from(context)
+                .inflate(R.layout.view_preview_player, null, false) as PlayerView).apply {
                 player = viewModel.player
             }
         },

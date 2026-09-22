@@ -21,8 +21,6 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -200,11 +198,7 @@ object WhisperModelValidator {
         }
     }
 
-    private fun readIntLe(raf: RandomAccessFile): Int {
-        val bytes = ByteArray(4)
-        raf.readFully(bytes)
-        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).int
-    }
+    private fun readIntLe(raf: RandomAccessFile): Int = Integer.reverseBytes(raf.readInt())
 }
 
 /**
