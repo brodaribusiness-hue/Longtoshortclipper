@@ -143,6 +143,7 @@ object VideoManager {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var pcmFile: File? = null
+        var out: DataOutputStreamLittleEndian? = null
         try {
             extractor.setDataSource(context, uri, null)
             var trackIndex = -1
@@ -165,7 +166,8 @@ object VideoManager {
             codec.start()
 
             pcmFile = File(context.cacheDir, "audio_${System.nanoTime()}.pcm")
-            val out = DataOutputStreamLittleEndian(BufferedOutputStream(FileOutputStream(pcmFile), 1 shl 16))
+            val pcmOut = DataOutputStreamLittleEndian(BufferedOutputStream(FileOutputStream(pcmFile), 1 shl 16))
+            out = pcmOut
 
             var srcSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             var srcChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
@@ -184,7 +186,8 @@ object VideoManager {
 
             while (!sawOutputEos) {
                 if (isCancelled()) {
-                    out.close()
+                    pcmOut.close()
+                    out = null
                     pcmFile.delete()
                     return null
                 }
@@ -231,7 +234,7 @@ object VideoManager {
                                     windowCount = 0
                                 }
                                 val resampled = resampler.push(v)
-                                for (o in resampled) out.writeFloatLe(o)
+                                for (o in resampled) pcmOut.writeFloatLe(o)
                             }
                             decodedUs = max(decodedUs, info.presentationTimeUs)
                             if (durationUs > 0) onProgress(min(1f, decodedUs.toFloat() / durationUs))
@@ -242,13 +245,15 @@ object VideoManager {
                 }
             }
             if (windowCount > 0) envelope.add(sqrt(windowSumSquares / windowCount).toFloat())
-            out.close()
+            pcmOut.close()
+            out = null
 
             return AudioDecodeResult(pcmFile, envelope, TARGET_SAMPLE_RATE, decodedUs / 1000)
         } catch (t: Throwable) {
             pcmFile?.delete()
             throw t
         } finally {
+            runCatching { out?.close() }
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             runCatching { extractor.release() }

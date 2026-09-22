@@ -65,7 +65,7 @@ fun VideoPreview(
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
-                .pointerInput(state.id) {
+                .pointerInput(state.id, cropRect, boxWpx, boxHpx) {
                     detectDragGestures { change, dragAmount ->
                         change.consume()
                         val dCx = dragAmount.x * cropRect.widthFrac / boxWpx

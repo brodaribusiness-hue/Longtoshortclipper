@@ -133,7 +133,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val source = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     VideoManager.readMetadata(getApplication(), uri, displayName)
                 }
-                if (source.durationMs <= 0 || source.displayWidth <= 0) {
+                if (source.durationMs <= 0 || source.displayWidth <= 0 || source.displayHeight <= 0) {
                     onResult(false, "This file could not be read as a video.")
                     return@launch
                 }
@@ -142,6 +142,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 synchronized(history) { history.clear(); history.push(project) }
                 _state.value = project
                 setupPlayer()
+                scheduleAutosave()
                 onResult(true, null)
             } catch (t: Throwable) {
                 onResult(false, "Import failed: ${t.message ?: "unsupported media"}")
@@ -218,9 +219,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setSelection(startMs: Long, endMs: Long, tag: String = "selection", coalesceMs: Long = 500L) {
         val source = _state.value.source ?: return
-        val minClipMs = 1000L
-        val start = startMs.coerceIn(0, source.durationMs)
-        val end = endMs.coerceIn(start + minClipMs, source.durationMs)
+        val duration = source.durationMs
+        if (duration <= 0L) return
+        val minClipMs = minOf(1000L, duration)
+        val maxStart = (duration - minClipMs).coerceAtLeast(0L)
+        val start = startMs.coerceIn(0L, maxStart)
+        val end = endMs.coerceIn(start + minClipMs, duration)
         commit({ it.copy(timeline = it.timeline.copy(selectionStartMs = start, selectionEndMs = end)) }, tag, coalesceMs)
     }
 
@@ -231,11 +235,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     // ------------------------------------------------------------- tracking
 
     fun setAutoTracking(enabled: Boolean) {
-        if (enabled && _state.value.tracking.autoPath.isEmpty()) {
+        if (!enabled) {
+            cancelFaceDetectionPass()
+            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
+            return
+        }
+        if (_state.value.tracking.autoPath.isEmpty()) {
             commit({ it.copy(tracking = it.tracking.copy(autoEnabled = true)) })
             startFaceDetectionPass()
         } else {
-            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = enabled)) })
+            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = true)) })
         }
     }
 
@@ -436,12 +445,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         exportJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             exportState.value = ExportState(phase = ExportPhase.PREPARING)
+            var ticker: Job? = null
+            val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
+            val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
             try {
                 val plan = exportManager.computePlan(s)
-                val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
-                val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
                 exportState.value = exportState.value.copy(phase = ExportPhase.TRANSFORMING)
-                val ticker = launch {
+                ticker = launch {
                     while (isActive) {
                         delay(500)
                         if (exportState.value.isBusy) {
@@ -471,8 +481,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 onDone(null)
             } catch (e: com.shortsclipper.video.ExportCancelledException) {
+                ticker?.cancel()
+                outFile.delete()
                 exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
             } catch (t: Throwable) {
+                ticker?.cancel()
+                outFile.delete()
                 exportState.value = ExportState(
                     phase = ExportPhase.FAILED,
                     elapsedMs = System.currentTimeMillis() - startedAt,

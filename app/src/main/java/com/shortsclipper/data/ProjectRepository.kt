@@ -32,8 +32,15 @@ class ProjectRepository(private val baseDir: File) {
         val tmp = File(projectsDir, state.id + ".json.tmp")
         return try {
             tmp.writeText(json.encodeToString(ProjectState.serializer(), state))
-            if (target.exists()) target.delete()
-            tmp.renameTo(target)
+            if (tmp.renameTo(target)) {
+                true
+            } else {
+                tmp.inputStream().use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                tmp.delete()
+                true
+            }
         } catch (t: Throwable) {
             tmp.delete()
             false
