@@ -42,6 +42,7 @@ object CropCalculator {
 
     /** Largest 9:16 rectangle that fits the display frame, in pixels. */
     fun baseRectSize(displayW: Int, displayH: Int): Pair<Float, Float> {
+        require(displayW > 0 && displayH > 0) { "Display dimensions must be positive" }
         val frameAspect = displayW.toFloat() / displayH
         return if (frameAspect >= TARGET_ASPECT) {
             Pair(displayH * TARGET_ASPECT, displayH.toFloat())

@@ -24,8 +24,11 @@ object WordAssembler {
         .trim()
 
     fun isSpecialToken(rawText: String): Boolean {
-        val t = rawText.trim()
-        return t.isEmpty() || (t.startsWith("[_") && t.endsWith("_]")) || t == "[BLANK_AUDIO]" || t == "[SILENCE]"
+        val token = rawText.trim()
+        return token.isEmpty() ||
+            (token.startsWith("[_") && token.endsWith("_]")) ||
+            (token.startsWith("<|") && token.endsWith("|>")) ||
+            token == "[BLANK_AUDIO]" || token == "[SILENCE]"
     }
 
     /** Groups tokens into words. Assumes tokens are time-ordered. */
@@ -36,19 +39,26 @@ object WordAssembler {
             if (current.isEmpty()) return
             val text = current.joinToString("") { cleanToken(it.text) }.trim()
             if (text.isNotEmpty()) {
+                val confidences = current.map { it.confidence }.filter { it.isFinite() }
                 words.add(
                     Word(
                         text = text,
                         startTimeMs = current.first().startMs,
                         endTimeMs = current.last().endMs,
-                        confidence = current.map { it.confidence }.average().toFloat(),
+                        confidence = confidences.average().toFloat().takeIf { it.isFinite() } ?: 0f,
                     )
                 )
             }
             current = ArrayList()
         }
         for (token in tokens) {
-            if (isSpecialToken(token.text)) continue
+            if (token.endMs < token.startMs) continue
+            if (isSpecialToken(token.text)) {
+                // Control/timestamp tokens mark a boundary; never merge the
+                // text on either side into one artificial caption word.
+                flush()
+                continue
+            }
             if (isWordStart(token.text) && current.isNotEmpty()) flush()
             current.add(token)
         }

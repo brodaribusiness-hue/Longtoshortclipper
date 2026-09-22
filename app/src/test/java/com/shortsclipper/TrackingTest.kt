@@ -87,6 +87,31 @@ class TrackingTest {
     }
 
     @Test
+    fun `path compaction preserves the first and final observation`() {
+        val points = listOf(
+            FacePoint(0L, 0.2f, 0.5f, 0.2f),
+            FacePoint(33L, 0.3f, 0.5f, 0.2f),
+            FacePoint(66L, 0.4f, 0.5f, 0.2f),
+        )
+        val compacted = TrackingSmoother.compact(points, minIntervalMs = 100L)
+        assertEquals(0L, compacted.first().timeMs)
+        assertEquals(66L, compacted.last().timeMs)
+    }
+
+    @Test
+    fun `smoothing never blends across a long missing-face gap`() {
+        val points = listOf(
+            FacePoint(0L, 0.2f, 0.5f, 0.2f),
+            FacePoint(100L, 0.2f, 0.5f, 0.2f),
+            FacePoint(3_000L, 0.8f, 0.5f, 0.2f),
+            FacePoint(3_100L, 0.8f, 0.5f, 0.2f),
+        )
+        val smoothed = TrackingSmoother.smooth(points, SmoothingPreset.SMOOTH)
+        assertEquals(0.2f, smoothed[1].xFrac, 0.001f)
+        assertEquals(0.8f, smoothed[2].xFrac, 0.001f)
+    }
+
+    @Test
     fun `smooth preset reacts slower than responsive`() {
         val path = listOf(
             FacePoint(0L, 0.2f, 0.5f, 0.2f),
@@ -150,6 +175,18 @@ class TrackingTest {
         // Just outside the blend window: back to auto.
         val after = TrackingEngine.evaluateAt(tracking, 5_000 + TrackingEngine.MANUAL_BLEND_MS * 2)
         assertEquals(0.5f, after.centerX, 0.02f)
+    }
+
+    @Test
+    fun `automatic path does not apply before first actual face detection`() {
+        val tracking = TrackingState(
+            autoEnabled = true,
+            autoPath = listOf(FacePoint(5_000L, 0.8f, 0.4f, 0.2f)),
+        )
+        assertNull(TrackingEngine.autoAt(tracking.autoPath, 4_999L))
+        val before = TrackingEngine.evaluateAt(tracking, 0L)
+        assertEquals(0.5f, before.centerX, 0.001f)
+        assertEquals(0.8f, TrackingEngine.evaluateAt(tracking, 5_000L).centerX, 0.001f)
     }
 
     @Test

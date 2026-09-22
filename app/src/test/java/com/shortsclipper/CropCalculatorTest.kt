@@ -32,6 +32,30 @@ class CropCalculatorTest {
     }
 
     @Test
+    fun `square source is intentionally center-cropped to 9-16 without stretching`() {
+        val rect = CropCalculator.rectFor(
+            com.shortsclipper.video.CropTarget(0.5f, 0.5f, 1f),
+            displayW = 1080,
+            displayH = 1080,
+        )
+        assertEquals(9f / 16f, rect.widthFrac, 0.0001f)
+        assertEquals(1f, rect.heightFrac, 0.0001f)
+
+        val transform = CropCalculator.previewTransform(
+            rect = rect,
+            boxWidthPx = 540f,
+            boxHeightPx = 960f,
+            displayW = 1080,
+            displayH = 1080,
+        )
+        val fit = minOf(540f / 1080f, 960f / 1080f)
+        assertNear(540f, transform.scale * rect.widthFrac * 1080f * fit)
+        assertNear(960f, transform.scale * rect.heightFrac * 1080f * fit)
+        assertNear(0f, transform.translationXPx)
+        assertNear(0f, transform.translationYPx)
+    }
+
+    @Test
     fun `center is clamped so crop stays inside frame`() {
         val t = CropCalculator.clampCenter(0f, 0f, 1.5f, 1920, 1080)
         assertTrue(t.centerX > 0f)

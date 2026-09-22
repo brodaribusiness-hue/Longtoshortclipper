@@ -96,6 +96,33 @@ class ClipGenerationTest {
     }
 
     @Test
+    fun `preanalyzed generation matches direct generation`() {
+        val transcript = syntheticTranscript(16)
+        val durationMs = 30_000L
+        val sentences = ClipGenerator.prepareSentences(transcript, durationMs)
+        val anchors = HighlightAnalyzer.findAnchors(sentences)
+
+        assertEquals(
+            ClipGenerator.generate(transcript, durationMs, TargetDuration.T15),
+            ClipGenerator.generate(sentences, anchors, durationMs, TargetDuration.T15),
+        )
+    }
+
+    @Test
+    fun `words wholly beyond the video cannot create candidates`() {
+        val transcript = Transcript(
+            "en",
+            listOf(
+                Word("Why", 20_000L, 20_100L, 0.9f),
+                Word("now?", 20_120L, 20_300L, 0.9f),
+                Word("Amazing!", 20_350L, 20_600L, 0.9f),
+            ),
+            emptyList(),
+        )
+        assertTrue(ClipGenerator.generate(transcript, 10_000L, TargetDuration.T15).isEmpty())
+    }
+
+    @Test
     fun `scoring is transparent and bounded`() {
         val transcript = syntheticTranscript(12)
         val sentences = HighlightAnalyzer.splitSentences(transcript.words)

@@ -33,6 +33,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +50,10 @@ import com.shortsclipper.ui.theme.BgSecondary
 import com.shortsclipper.ui.theme.Error
 import com.shortsclipper.ui.theme.TextPrimary
 import com.shortsclipper.ui.theme.TextSecondary
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Home: video import, recent projects and the on-device model manager. */
 @Composable
@@ -57,27 +62,38 @@ fun HomeScreen(
     onOpenEditor: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var message by remember { mutableStateOf<String?>(null) }
-    val projects by androidx.compose.runtime.produceState(initialValue = viewModel.recentProjects()) {
-        value = viewModel.recentProjects()
-    }
+    val projects by viewModel.recentProjects.collectAsState()
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            runCatching {
+            val permissionPersisted = runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     uri,
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
+            }.isSuccess
+            if (!permissionPersisted) {
+                message = "This provider did not grant persistent read access. Choose the video through the system file picker again."
+                return@rememberLauncherForActivityResult
             }
-            var name = "video"
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx) ?: name
-            }
-            viewModel.importVideo(uri, name) { ok, error ->
-                message = error
-                if (ok) onOpenEditor()
+            scope.launch {
+                val name = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && idx >= 0) cursor.getString(idx) else null
+                        } ?: "video"
+                    }
+                }.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    "video"
+                }
+                viewModel.importVideo(uri, name) { ok, error ->
+                    message = error
+                    if (ok) onOpenEditor()
+                }
             }
         }
     }
@@ -142,7 +158,10 @@ fun HomeScreen(
                         .padding(vertical = 4.dp)
                         .background(BgSecondary, RoundedCornerShape(12.dp))
                         .clickable {
-                            if (viewModel.loadProject(project.id)) onOpenEditor()
+                            viewModel.loadProject(project.id) { opened, error ->
+                                message = error
+                                if (opened) onOpenEditor()
+                            }
                         }
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,

@@ -12,6 +12,7 @@ import kotlin.math.roundToInt
 object ClipScorer {
 
     private val LEADING_CONJUNCTIONS = setOf("and", "but", "so", "because", "which", "that", "also", "then", "or")
+    private val TOKEN_SEPARATOR = Regex("[^\\p{L}']+")
 
     data class Scored(
         val components: ScoreComponents,
@@ -25,6 +26,10 @@ object ClipScorer {
         endIndex: Int,
         targetDurationSecs: Int,
     ): Scored {
+        require(startIndex in sentences.indices && endIndex in sentences.indices && startIndex <= endIndex) {
+            "Invalid candidate sentence range"
+        }
+        require(targetDurationSecs > 0) { "Target duration must be positive" }
         val clip = sentences.subList(startIndex, endIndex + 1)
         val first = clip.first()
         val last = clip.last()
@@ -42,7 +47,7 @@ object ClipScorer {
         val hook10 = (hook.coerceIn(0f, 1f) * 10f)
 
         // Context: does the clip stand on its own?
-        val firstTokens = first.text.lowercase().split(Regex("[^a-z']+")).filter { it.isNotBlank() }
+        val firstTokens = first.text.lowercase().split(TOKEN_SEPARATOR).filter { it.isNotBlank() }
         val leadingConjunction = firstTokens.firstOrNull() in LEADING_CONJUNCTIONS
         var context = 0.7f
         if (firstSignals.gapBeforeMs >= 400) context += 0.15f
@@ -69,9 +74,9 @@ object ClipScorer {
         // Information density (2.8+ words/sec saturates the scale).
         val density10 = (min(1f, wps / 2.8f) * 10f)
 
-        val potential = (0.25f * hook10 + 0.15f * context10 + 0.20f * engagement10 +
-            0.25f * completeness10 + 0.15f * density10) / 10f
-        val potential10 = (potential * 10f).roundToInt() / 10f
+        val potential = 0.25f * hook10 + 0.15f * context10 + 0.20f * engagement10 +
+            0.25f * completeness10 + 0.15f * density10
+        val potential10 = (potential.coerceIn(0f, 10f) * 10f).roundToInt() / 10f
 
         val reasons = ArrayList<String>()
         if (firstSignals.isQuestion) reasons.add("Starts with a question")

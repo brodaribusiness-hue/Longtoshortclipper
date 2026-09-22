@@ -16,8 +16,9 @@ android {
         versionName = "1.0"
 
         ndk {
-            // arm64-v8a: real devices. x86_64: emulator testing.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // arm64-v8a for modern phones, armeabi-v7a for still-common
+            // 32-bit devices, and x86_64 for emulator testing.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
         externalNativeBuild {
             cmake {

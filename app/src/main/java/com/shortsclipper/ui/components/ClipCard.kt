@@ -21,6 +21,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
@@ -42,6 +43,8 @@ import com.shortsclipper.ui.theme.Success
 import com.shortsclipper.ui.theme.TextPrimary
 import com.shortsclipper.ui.theme.TextSecondary
 import com.shortsclipper.video.VideoManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Candidate clip card: thumbnail, duration, range, Content Potential Score,
@@ -58,8 +61,20 @@ fun ClipCard(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val thumbnail by produceState<Bitmap?>(initialValue = null, candidate.id) {
-        value = VideoManager.extractFrame(context, android.net.Uri.parse(videoUri), candidate.startMs + 200, maxDim = 360, accurate = false)
+    val thumbnail by produceState<Bitmap?>(initialValue = null, candidate.id, videoUri) {
+        value = if (videoUri.isBlank()) null else withContext(Dispatchers.IO) {
+            VideoManager.extractFrame(context, android.net.Uri.parse(videoUri), candidate.startMs + 200, maxDim = 360, accurate = false)
+        }
+    }
+    // Thumbnails come from MediaMetadataRetriever as native-backed Bitmaps.
+    // Dispose them when a candidate row leaves composition instead of waiting
+    // for a long candidate-browsing session to pressure the graphics heap.
+    DisposableEffect(thumbnail) {
+        onDispose {
+            thumbnail?.let { bitmap ->
+                if (!bitmap.isRecycled) runCatching { bitmap.recycle() }
+            }
+        }
     }
 
     Card(
@@ -142,23 +157,30 @@ fun ClipCard(
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
                         onClick = onSelect,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 2.dp),
-                        modifier = Modifier.height(30.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp, vertical = 2.dp),
+                        modifier = Modifier.weight(1f).height(30.dp),
                     ) {
-                        Text("Select", fontSize = 12.sp)
+                        Text("Select", fontSize = 11.sp, maxLines = 1)
                     }
-                    TextButton(onClick = onPreview, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
-                        Text("Preview", color = TextPrimary, fontSize = 12.sp)
+                    TextButton(
+                        onClick = onPreview,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 1.dp),
+                    ) {
+                        Text("Preview", color = TextPrimary, fontSize = 11.sp, maxLines = 1)
                     }
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onReject, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
-                        Text("Reject", color = TextSecondary, fontSize = 12.sp)
+                    TextButton(
+                        onClick = onReject,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 1.dp),
+                    ) {
+                        Text("Reject", color = TextSecondary, fontSize = 11.sp, maxLines = 1)
                     }
                 }
             }

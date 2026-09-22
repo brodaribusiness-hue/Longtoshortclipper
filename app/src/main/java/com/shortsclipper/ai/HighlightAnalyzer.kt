@@ -1,6 +1,5 @@
 package com.shortsclipper.ai
 
-import com.shortsclipper.model.Transcript
 import com.shortsclipper.model.Word
 import kotlin.math.abs
 import kotlin.math.min
@@ -48,6 +47,11 @@ object HighlightAnalyzer {
     private val QUESTION_STARTERS = setOf(
         "who", "what", "when", "where", "why", "how", "is", "are", "do", "does",
         "did", "can", "could", "would", "will", "should", "have", "has", "was", "were",
+        // Common starters for the local-language choices exposed in the UI.
+        "qué", "que", "cómo", "como", "cuándo", "cuando", "dónde", "donde", "porqué", "porque",
+        "pourquoi", "comment", "quel", "quelle", "quand", "où",
+        "warum", "wie", "was", "wer", "wann", "wo",
+        "qual", "quais", "quando", "onde",
     )
     private val CONTRAST = setOf(
         "but", "however", "instead", "although", "though", "yet", "nevertheless",
@@ -72,9 +76,9 @@ object HighlightAnalyzer {
     )
     private val SECOND_PERSON = setOf("you", "your", "yourself", "you're", "you've", "you'll")
 
-    private val SENTENCE_ENDERS = setOf(".", "!", "?", "?!", "!?", "…")
     private val MAX_SENTENCE_WORDS = 40
     private val SENTENCE_GAP_MS = 800L
+    private val TOKEN_SEPARATOR = Regex("[^\\p{L}\\p{N}']+")
 
     /** Splits a word stream into sentence-like units at punctuation or pauses. */
     fun splitSentences(words: List<Word>): List<Sentence> {
@@ -88,8 +92,8 @@ object HighlightAnalyzer {
                     Sentence(
                         index = sentences.size,
                         words = current.toList(),
-                        startMs = current.first().startTimeMs,
-                        endMs = current.last().endTimeMs,
+                        startMs = current.minOf { it.startTimeMs },
+                        endMs = current.maxOf { it.endTimeMs },
                     )
                 )
                 current = ArrayList()
@@ -97,7 +101,8 @@ object HighlightAnalyzer {
         }
 
         for (word in words) {
-            val gap = if (lastEndMs >= 0) word.startTimeMs - lastEndMs else 0L
+            if (word.endTimeMs < word.startTimeMs) continue
+            val gap = if (lastEndMs >= 0) (word.startTimeMs - lastEndMs).coerceAtLeast(0L) else 0L
             if (gap > SENTENCE_GAP_MS) flush()
             current.add(word)
             val trimmed = word.text.trim()
@@ -105,7 +110,7 @@ object HighlightAnalyzer {
             if ((endsSentence && current.size >= 3) || current.size >= MAX_SENTENCE_WORDS) {
                 flush()
             }
-            lastEndMs = word.endTimeMs
+            lastEndMs = maxOf(lastEndMs, word.endTimeMs)
         }
         flush()
         // Re-index defensively.
@@ -115,7 +120,7 @@ object HighlightAnalyzer {
     /** Textual signals for one sentence. */
     fun signalsFor(sentence: Sentence, allSentences: List<Sentence>): Signals {
         val lower = sentence.text.lowercase()
-        val tokens = lower.split(Regex("[^a-z0-9']+")).filter { it.isNotBlank() }
+        val tokens = lower.split(TOKEN_SEPARATOR).filter { it.isNotBlank() }
         val first = tokens.firstOrNull() ?: ""
 
         val isQuestion = sentence.text.trim().endsWith("?") || (first in QUESTION_STARTERS && lower.contains("?"))
@@ -174,8 +179,9 @@ object HighlightAnalyzer {
                 .slice((i - 2).coerceAtLeast(0)..(i + 2).coerceAtMost(scores.size - 1))
                 .average().toFloat()
             val previousScore = scores.getOrNull(i - 1) ?: Float.NEGATIVE_INFINITY
+            val nextScore = scores.getOrNull(i + 1) ?: Float.NEGATIVE_INFINITY
             val combined = scores[i] * 0.7f + neighborAvg * 0.3f
-            val isLocalPeak = scores[i] + 0.001f >= previousScore
+            val isLocalPeak = scores[i] + 0.001f >= previousScore && scores[i] + 0.001f >= nextScore
             if (isLocalPeak && combined >= 0.32f) {
                 anchors.add(Anchor(i, combined, signals[i]))
             }

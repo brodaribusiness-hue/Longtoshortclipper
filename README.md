@@ -19,16 +19,19 @@ whisper model.
 
 ### Player & timeline
 - Media3/ExoPlayer playback: play, pause, accurate seek, current/total time, rotation-safe preview
+- Explicit **Source** preview that fits the original upright aspect without stretching/cropping, plus a
+  separate **9:16 output** preview that shows the intentional tracked export crop
 - Professional timeline: waveform, draggable start/end handles, playhead scrubbing, zoom (1×–16×)
 - Clip preview with automatic in/out point handling
-- Real state-based undo/redo (timeline, crop, tracking, keyframes, aspect, silence edits, selection)
+- Real state-based undo/redo (timeline, crop, tracking, keyframes and silence edits)
 
 ### 9:16 reframing & tracking
 - Primary output aspect ratio 9:16
 - Manual reframing: drag the preview to pan; zoom via keyframes; clamped crop window
 - Manual keyframe tracking with smoothstep interpolation (`00:00 → left`, `00:05 → center`, …)
-- Automatic face tracking (ML Kit, fully on-device): detect → tap to select target → track with
-  track association + moving-average smoothing (Responsive / Balanced / Smooth presets)
+- Automatic face tracking (ML Kit, fully on-device): one tracking-enabled detector processes **every
+  sequentially decoded frame** in the selected range; only its compact retained path is downsampled
+  for storage, then associated and smoothed (Responsive / Balanced / Smooth presets)
 - **Hybrid tracking**: manual keyframes correct the automatic path and fade in/out around the correction
 - Multiple faces supported: all are detected, only the selected target is tracked (no split-screen in V1)
 - **Preview/export consistency**: one shared `CropCalculator` drives the live preview and the export
@@ -51,7 +54,8 @@ whisper model.
 ### Export
 - Media3 Transformer: crop/pan/zoom re-applied per frame, audio preserved, A/V synced
 - Device-capability-aware: encoder/mime probing, resolution tiers (2160→360), never upscales
-- Quality modes: *Same as Original* (source resolution/mime when encodable) / *High Quality* (1080p cap)
+- Broad playback first: H.264/AVC is selected when supported, with codec fallback only when needed
+- Quality modes: *Same as Original* (source-detail resolution when encodable) / *High Quality* (1080p cap)
 - Silence removal exported as an `EditedMediaItemSequence` (hard cuts, per-segment clipping)
 - Progress, elapsed time, cancellation, friendly errors (unsupported encoder, insufficient storage…)
 - Saved to the standard gallery via MediaStore → `Movies/ShortsClipper`
@@ -106,8 +110,8 @@ official whisper.cpp repository, or import a local `.bin` model. Transcription i
 - Content signals are English-keyword-based heuristics; non-English content still transcribes but
   scores fewer signal matches.
 - Content Potential Score is a transparent local heuristic — it does not predict virality or engagement.
-- V1 exports MP4 (H.264/HEVC as supported by the device encoder); exotic source containers are
-  decoded and re-encoded rather than remuxed, because 9:16 reframing requires re-encoding anyway.
-- Face tracking runs at ~4 fps sampling over the selected clip; very fast motion may lag slightly
-  (use the Responsive preset or manual keyframes).
+- V1 exports MP4, preferring H.264/AVC and using a device-supported fallback only when AVC is unavailable;
+  exotic source containers are decoded and re-encoded rather than remuxed because 9:16 reframing requires it.
+- Face tracking analyzes every sequential decoder frame, but extreme motion can still challenge a fast
+  on-device detector; use the Responsive preset or manual keyframes for creative corrections.
 - CI/test coverage is JVM-level (logic). No emulator-based instrumented tests run in this environment.

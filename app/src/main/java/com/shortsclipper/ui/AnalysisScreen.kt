@@ -1,6 +1,8 @@
 package com.shortsclipper.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,15 +13,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -32,7 +36,6 @@ import com.shortsclipper.model.AnalysisPhase
 import com.shortsclipper.model.AnalysisStep
 import com.shortsclipper.model.StepState
 import com.shortsclipper.ui.theme.Accent
-import com.shortsclipper.ui.theme.BgPrimary
 import com.shortsclipper.ui.theme.BgSecondary
 import com.shortsclipper.ui.theme.Error
 import com.shortsclipper.ui.theme.Success
@@ -52,21 +55,37 @@ fun AnalysisScreen(
     val analysis by viewModel.analysisState.collectAsState()
     val state by viewModel.state.collectAsState()
 
-    // Auto-start when opened without an active run.
-    LaunchedEffect(state.id) {
-        if (!analysis.isRunning && analysis.phase != AnalysisPhase.DONE) {
-            viewModel.runAnalysis()
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+    ) {
         Text("Analyze Video", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text(
             "Local transcription (whisper.cpp) + deterministic content analysis. Long videos can take several minutes.",
             color = TextSecondary,
             fontSize = 11.sp,
-            modifier = Modifier.padding(top = 2.dp, bottom = 18.dp),
+            modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
         )
+
+        Text("Transcription language", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 12.dp)) {
+            listOf("auto" to "Auto", "en" to "EN", "es" to "ES", "fr" to "FR", "de" to "DE", "pt" to "PT").forEach { (code, label) ->
+                FilterChip(
+                    selected = state.transcriptionLanguage == code,
+                    onClick = { viewModel.setTranscriptionLanguage(code) },
+                    enabled = !analysis.isRunning,
+                    label = { Text(label, fontSize = 10.sp) },
+                    modifier = Modifier.padding(end = 4.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Accent,
+                        selectedLabelColor = Color.Black,
+                        labelColor = TextPrimary,
+                    ),
+                )
+            }
+        }
 
         for (step in AnalysisStep.entries) {
             val stepState = analysis.stepStates[step] ?: StepState.PENDING
@@ -104,7 +123,7 @@ fun AnalysisScreen(
                     )
                     if (stepState == StepState.RUNNING && progress != null && progress > 0f) {
                         LinearProgressIndicator(
-                            progress = { progress.coerceIn(0f, 1f) },
+                            progress = progress.coerceIn(0f, 1f),
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(4.dp),
                             color = Accent,
                         )
@@ -125,7 +144,7 @@ fun AnalysisScreen(
             )
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(16.dp))
 
         if (analysis.phase == AnalysisPhase.DONE) {
             Button(
@@ -135,6 +154,9 @@ fun AnalysisScreen(
             ) {
                 Text("View potential clips", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
+            TextButton(onClick = { viewModel.runAnalysis() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Run analysis again", color = TextSecondary, fontSize = 12.sp)
+            }
         } else if (analysis.phase == AnalysisPhase.FAILED) {
             Button(
                 onClick = { viewModel.runAnalysis() },
@@ -142,6 +164,14 @@ fun AnalysisScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
             ) {
                 Text("Retry analysis", fontSize = 14.sp)
+            }
+        } else if (analysis.phase == AnalysisPhase.IDLE) {
+            Button(
+                onClick = { viewModel.runAnalysis() },
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
+            ) {
+                Text("Start local analysis", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         } else if (analysis.isRunning) {
             Button(

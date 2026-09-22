@@ -20,6 +20,14 @@ data class Segment(
     val endTimeMs: Long,
 )
 
+/** User text correction for one timed caption/transcript segment. */
+@Serializable
+data class CaptionEdit(
+    val startTimeMs: Long,
+    val endTimeMs: Long,
+    val text: String,
+)
+
 /**
  * Full transcript for the analyzed (selected) audio range.
  * Word timestamps power the clip analysis engine.

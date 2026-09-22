@@ -32,10 +32,12 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <limits>
 #include <fstream>
 #include <map>
 #include <set>
 #include <string>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 #include <regex>
@@ -898,10 +900,31 @@ struct whisper_global {
 
 static whisper_global g_state;
 
+class whisper_model_read_error : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// Model files may be imported from local storage. Never let a short read leave
+// partially initialized dimensions, names or tensor data for the native loader
+// to consume. `allow_eof` is used only for the clean end of the tensor stream.
 template<typename T>
-static void read_safe(whisper_model_loader * loader, T & dest) {
-    loader->read(loader->context, &dest, sizeof(T));
+static bool read_safe(whisper_model_loader * loader, T & dest, bool allow_eof = false) {
+    const size_t nread = loader->read(loader->context, &dest, sizeof(T));
+    if (nread == 0 && allow_eof) {
+        return false;
+    }
+    if (nread != sizeof(T)) {
+        throw whisper_model_read_error("unexpected end of model file");
+    }
     BYTESWAP_VALUE(dest);
+    return true;
+}
+
+static void read_exact(whisper_model_loader * loader, void * dest, size_t size) {
+    if (size != 0 && loader->read(loader->context, dest, size) != size) {
+        throw whisper_model_read_error("unexpected end of model file");
+    }
 }
 
 static bool kv_cache_init(
@@ -1377,7 +1400,7 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
         read_safe(loader, filters.n_fft);
 
         filters.data.resize(filters.n_mel * filters.n_fft);
-        loader->read(loader->context, filters.data.data(), filters.data.size() * sizeof(float));
+        read_exact(loader, filters.data.data(), filters.data.size() * sizeof(float));
         BYTESWAP_FILTERS(filters);
     }
 
@@ -1403,7 +1426,7 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
 
             if (len > 0) {
                 tmp.resize(len);
-                loader->read(loader->context, &tmp[0], tmp.size()); // read to buffer
+                read_exact(loader, &tmp[0], tmp.size()); // read to buffer
                 word.assign(&tmp[0], tmp.size());
             } else {
                 // seems like we have an empty-string token in multi-language models (i = 50256)
@@ -1720,25 +1743,37 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
             int32_t length;
             int32_t ttype;
 
-            read_safe(loader, n_dims);
+            if (!read_safe(loader, n_dims, true)) {
+                break;
+            }
             read_safe(loader, length);
             read_safe(loader, ttype);
 
-            if (loader->eof(loader->context)) {
-                break;
+            // Validate every allocation/indexing input before using it. The
+            // legacy stream stores untrusted dimensions and a variable-length
+            // tensor name ahead of each tensor payload.
+            if (n_dims < 1 || n_dims > GGML_MAX_DIMS ||
+                    length < 1 || length > 256 ||
+                    ttype < 0 || ttype >= GGML_TYPE_COUNT || ttype == 4 || ttype == 5) {
+                WHISPER_LOG_ERROR("%s: invalid tensor metadata in model file\n", __func__);
+                return false;
             }
 
-            int32_t nelements = 1;
-            int32_t ne[4] = { 1, 1, 1, 1 };
+            int64_t nelements = 1;
+            int32_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
             for (int i = 0; i < n_dims; ++i) {
                 read_safe(loader, ne[i]);
+                if (ne[i] <= 0 || nelements > std::numeric_limits<int32_t>::max() / ne[i]) {
+                    WHISPER_LOG_ERROR("%s: invalid tensor dimensions in model file\n", __func__);
+                    return false;
+                }
                 nelements *= ne[i];
             }
 
             std::string name;
-            std::vector<char> tmp(length); // create a buffer
-            loader->read(loader->context, &tmp[0], tmp.size()); // read to buffer
-            name.assign(&tmp[0], tmp.size());
+            std::vector<char> tmp(length); // create a bounded buffer
+            read_exact(loader, tmp.data(), tmp.size());
+            name.assign(tmp.data(), tmp.size());
 
             if (model.tensors.find(name) == model.tensors.end()) {
                 WHISPER_LOG_ERROR("%s: unknown tensor '%s' in model file\n", __func__, name.data());
@@ -1774,13 +1809,13 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
 
             if (ggml_backend_buffer_is_host(model.buffer)) {
                 // for the CPU and Metal backend, we can read directly into the tensor
-                loader->read(loader->context, tensor->data, ggml_nbytes(tensor));
+                read_exact(loader, tensor->data, ggml_nbytes(tensor));
                 BYTESWAP_TENSOR(tensor);
             } else {
                 // read into a temporary buffer first, then copy to device memory
                 read_buf.resize(ggml_nbytes(tensor));
 
-                loader->read(loader->context, read_buf.data(), read_buf.size());
+                read_exact(loader, read_buf.data(), read_buf.size());
 
                 ggml_backend_tensor_set(tensor, read_buf.data(), 0, ggml_nbytes(tensor));
             }
@@ -3510,7 +3545,7 @@ struct whisper_context * whisper_init_from_file_with_params_no_state(const char 
     loader.read = [](void * ctx, void * output, size_t read_size) {
         std::ifstream * fin = (std::ifstream*)ctx;
         fin->read((char *)output, read_size);
-        return read_size;
+        return static_cast<size_t>(fin->gcount());
     };
 
     loader.eof = [](void * ctx) {
@@ -3570,6 +3605,11 @@ struct whisper_context * whisper_init_from_buffer_with_params_no_state(void * bu
 }
 
 struct whisper_context * whisper_init_with_params_no_state(struct whisper_model_loader * loader, struct whisper_context_params params) {
+    if (loader == nullptr || loader->read == nullptr || loader->close == nullptr) {
+        WHISPER_LOG_ERROR("%s: invalid model loader\n", __func__);
+        return nullptr;
+    }
+
     ggml_time_init();
 
     if (params.flash_attn && params.dtw_token_timestamps) {
@@ -3582,19 +3622,45 @@ struct whisper_context * whisper_init_with_params_no_state(struct whisper_model_
     WHISPER_LOG_INFO("%s: gpu_device = %d\n", __func__, params.gpu_device);
     WHISPER_LOG_INFO("%s: dtw        = %d\n", __func__, params.dtw_token_timestamps);
 
-    whisper_context * ctx = new whisper_context;
-    ctx->params = params;
+    // The loader is usually backed by a file descriptor. Close it exactly once
+    // on every path, including allocation and non-I/O exceptions from loading
+    // a malformed imported model.
+    bool loader_closed = false;
+    const auto close_loader = [&]() {
+        if (!loader_closed) {
+            loader_closed = true;
+            loader->close(loader->context);
+        }
+    };
+    whisper_context * ctx = nullptr;
 
-    if (!whisper_model_load(loader, *ctx)) {
-        loader->close(loader->context);
-        WHISPER_LOG_ERROR("%s: failed to load model\n", __func__);
-        delete ctx;
+    try {
+        ctx = new whisper_context;
+        ctx->params = params;
+        if (!whisper_model_load(loader, *ctx)) {
+            WHISPER_LOG_ERROR("%s: failed to load model\n", __func__);
+            close_loader();
+            whisper_free(ctx);
+            return nullptr;
+        }
+        close_loader();
+        return ctx;
+    } catch (const whisper_model_read_error & e) {
+        close_loader();
+        WHISPER_LOG_ERROR("%s: failed to read model safely: %s\n", __func__, e.what());
+        whisper_free(ctx);
+        return nullptr;
+    } catch (const std::exception & e) {
+        close_loader();
+        WHISPER_LOG_ERROR("%s: failed to initialize model: %s\n", __func__, e.what());
+        whisper_free(ctx);
+        return nullptr;
+    } catch (...) {
+        close_loader();
+        WHISPER_LOG_ERROR("%s: failed to initialize model with an unknown error\n", __func__);
+        whisper_free(ctx);
         return nullptr;
     }
-
-    loader->close(loader->context);
-
-    return ctx;
 }
 
 struct whisper_context * whisper_init_from_file_with_params(const char * path_model, struct whisper_context_params params) {

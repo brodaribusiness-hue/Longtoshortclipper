@@ -2,7 +2,10 @@ package com.shortsclipper.video
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.MediaCodecList
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -11,28 +14,35 @@ import android.os.StatFs
 import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.GlMatrixTransformation
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
-import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.VideoEncoderSettings
 import com.shortsclipper.model.ClipSegment
 import com.shortsclipper.model.ProjectState
 import com.shortsclipper.model.QualityMode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
+import com.google.common.collect.ImmutableList
 import kotlin.math.roundToInt
 
 class ExportCancelledException : Exception("Export cancelled")
@@ -42,9 +52,9 @@ class InsufficientStorageException(val requiredBytes: Long, val availableBytes: 
     IOException("Insufficient storage: need ~${requiredBytes / (1024 * 1024)} MB, have ${availableBytes / (1024 * 1024)} MB")
 
 /**
- * High-quality export using AndroidX Media3 Transformer with the SAME
- * transformation state as the preview (CropCalculator). Video is re-encoded
- * with the 9:16 crop/pan/zoom applied per frame; audio is preserved.
+ * Media3 Transformer export. The encoded source is decoded in display
+ * orientation by Media3; CropCalculator therefore receives the same upright
+ * dimensions and source-relative time basis as the source preview.
  */
 @OptIn(UnstableApi::class)
 class ExportManager(private val context: Context) {
@@ -52,69 +62,84 @@ class ExportManager(private val context: Context) {
     data class ExportPlan(
         val outWidth: Int,
         val outHeight: Int,
+        /** AVC whenever the device supports it; HEVC only as a fallback. */
         val videoMimeType: String,
         val videoBitrateBps: Int,
         val segments: List<ClipSegment>,
     ) {
         val estimatedBytes: Long
-            get() = segments.sumOf { it.durationMs } * (videoBitrateBps.toLong() / 8) / 1000 + 1024 * 1024
+            get() = segments.sumOf { it.durationMs } * (videoBitrateBps.toLong() / 8L) / 1_000L + 2L * 1024L * 1024L
     }
 
     companion object {
         const val GALLERY_FOLDER = "ShortsClipper"
-        private val HEIGHT_TIERS = intArrayOf(2160, 1440, 1080, 720, 540, 480, 360)
+        // 9:16 output heights. Include 1920 so an upright 1080x1920 source
+        // can remain full resolution when the AVC encoder supports it.
+        private val HEIGHT_TIERS = intArrayOf(2160, 1920, 1440, 1280, 1080, 960, 720, 640, 540, 480, 360)
+        private const val COPY_BUFFER_BYTES = 64 * 1024
     }
 
-    /** Device-capability aware export plan. */
+    /** Capability-checked, broadly compatible output plan. */
     fun computePlan(state: ProjectState): ExportPlan {
-        val src = state.source ?: throw IllegalStateException("No source video selected")
+        val source = state.source ?: throw IllegalStateException("No source video selected")
+        require(source.durationMs > 0L && source.displayWidth > 0 && source.displayHeight > 0) {
+            "Source video metadata is incomplete"
+        }
         val segments = state.exportSegments
-        if (segments.isEmpty()) throw IllegalStateException("Invalid timeline selection")
-        val displayH = src.displayHeight.coerceAtLeast(2)
+        if (segments.isEmpty()) throw IllegalStateException("Choose a non-empty clip before exporting")
+        require(segments.all { it.startMs >= 0L && it.endMs > it.startMs && it.endMs <= source.durationMs }) {
+            "Selected clip contains invalid source time ranges"
+        }
 
-        val preferredH = when (state.exportQuality) {
-            QualityMode.SAME_AS_ORIGINAL -> displayH
-            QualityMode.HIGH_QUALITY -> minOf(displayH, 1920)
-        }.coerceAtLeast(360)
+        val preferredHeight = when (state.exportQuality) {
+            QualityMode.SAME_AS_ORIGINAL -> source.displayHeight
+            QualityMode.HIGH_QUALITY -> minOf(source.displayHeight, 1_920)
+        }.coerceAtLeast(2)
 
-        val mime = pickEncoderMime(src.videoMimeType)
-        val targetH = pickSupportedHeight(mime, evenDown(preferredH))
-        val targetW = evenDown((targetH * CropCalculator.TARGET_ASPECT).roundToInt()).coerceAtLeast(176)
-        val fps = if (src.fps > 1f) src.fps else 30f
-        val bitrate = (targetW * targetH * fps * 0.14f).roundToInt().coerceIn(4_000_000, 28_000_000)
-        return ExportPlan(targetW, targetH, mime, bitrate, segments)
+        val (mime, width, height) = selectSupportedOutput(preferredHeight)
+        val fps = source.fps.takeIf { it.isFinite() && it >= 12f }?.coerceAtMost(60f) ?: 30f
+        val bitrate = (width * height * fps * 0.14f).roundToInt().coerceIn(2_000_000, 28_000_000)
+        return ExportPlan(width, height, mime, bitrate, segments)
     }
 
-    private fun pickEncoderMime(sourceMime: String?): String {
-        val candidates = ArrayList<String>()
-        if (sourceMime == "video/hevc" || sourceMime == "video/avc") candidates.add(sourceMime)
-        candidates.add("video/avc")
-        candidates.add("video/hevc")
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        return candidates.firstOrNull { candidate ->
-            list.codecInfos.any { info -> info.isEncoder && info.supportedTypes.contains(candidate) }
-        } ?: "video/avc"
+    private fun selectSupportedOutput(maxHeight: Int): Triple<String, Int, Int> {
+        val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        // AVC is deliberately first even when the input happens to be HEVC.
+        // It has the broadest Gallery/social/device decode compatibility.
+        val candidateMimes = listOf("video/avc", "video/hevc")
+        for (mime in candidateMimes) {
+            if (!hasEncoder(codecList, mime)) continue
+            val heights = (HEIGHT_TIERS.filter { it <= maxHeight } + evenDown(maxHeight)).distinct()
+            for (height in heights) {
+                val width = evenDown((height * CropCalculator.TARGET_ASPECT).roundToInt()).coerceAtLeast(2)
+                if (sizeSupported(codecList, mime, width, height)) return Triple(mime, width, height)
+            }
+        }
+        throw IllegalStateException("This device has no AVC/HEVC encoder supporting a 9:16 export size")
     }
 
-    private fun pickSupportedHeight(mime: String, maxHeight: Int): Int {
-        val tier = HEIGHT_TIERS.firstOrNull { it <= maxHeight && sizeSupported(mime, evenDown((it * CropCalculator.TARGET_ASPECT).roundToInt()), it) }
-        return (tier ?: minOf(maxHeight, 360)).coerceAtMost(maxHeight)
-    }
+    private fun hasEncoder(codecList: MediaCodecList, mime: String): Boolean =
+        codecList.codecInfos.any { info ->
+            info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+        }
 
-    private fun sizeSupported(mime: String, width: Int, height: Int): Boolean {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        return list.codecInfos.any { info ->
-            info.isEncoder && info.supportedTypes.contains(mime) && runCatching {
-                info.getCapabilitiesForType(mime).videoCapabilities.isSizeSupported(width, height)
+    private fun sizeSupported(codecList: MediaCodecList, mime: String, width: Int, height: Int): Boolean =
+        codecList.codecInfos.any { info ->
+            info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) } && runCatching {
+                info.getCapabilitiesForType(mime).videoCapabilities?.isSizeSupported(width, height) == true
             }.getOrDefault(false)
         }
+
+    private fun evenDown(value: Int): Int = when {
+        value <= 2 -> 2
+        value % 2 == 0 -> value
+        else -> value - 1
     }
 
-    private fun evenDown(v: Int): Int = if (v % 2 == 0) v else v - 1
-
     /**
-     * Runs the transformation and returns the output file. Never blocks the
-     * main thread; reports 0..100 progress; supports cancellation.
+     * Runs Transformer on the main application looper (required by Media3's
+     * listener/transformer threading model) while actual decode/encode remains
+     * asynchronous. Partial/cancelled outputs are deleted before return.
      */
     suspend fun export(
         state: ProjectState,
@@ -122,21 +147,21 @@ class ExportManager(private val context: Context) {
         outFile: File,
         onProgress: (Int) -> Unit,
         isCancelled: () -> Boolean,
-    ): File = withContext(Dispatchers.Default) {
-        val src = state.source!!
-        val displayW = src.displayWidth
-        val displayH = src.displayHeight
+    ): File = withContext(Dispatchers.Main.immediate) {
+        val source = state.source ?: throw IllegalStateException("No source video selected")
+        if (isCancelled()) throw ExportCancelledException()
+        outFile.parentFile?.mkdirs()
+        outFile.delete()
 
-        val stat = StatFs(context.cacheDir.absolutePath)
-        val available = stat.availableBytes
-        if (available < plan.estimatedBytes * 12 / 10) {
-            throw InsufficientStorageException(plan.estimatedBytes, available)
+        val availableBytes = StatFs(context.cacheDir.absolutePath).availableBytes
+        if (availableBytes < plan.estimatedBytes * 12L / 10L) {
+            throw InsufficientStorageException(plan.estimatedBytes, availableBytes)
         }
 
-        val result = CompletableDeferred<File>()
+        val completion = CompletableDeferred<File>()
         val encoderFactory = DefaultEncoderFactory.Builder(context)
             .setRequestedVideoEncoderSettings(
-                VideoEncoderSettings.Builder().setBitrate(plan.videoBitrateBps).build()
+                VideoEncoderSettings.Builder().setBitrate(plan.videoBitrateBps).build(),
             )
             .build()
 
@@ -145,111 +170,248 @@ class ExportManager(private val context: Context) {
             .setEncoderFactory(encoderFactory)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    result.complete(outFile)
+                    if (isCancelled()) completion.completeExceptionally(ExportCancelledException())
+                    else completion.complete(outFile)
                 }
 
-                override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
-                    if (isCancelled()) {
-                        result.completeExceptionally(ExportCancelledException())
-                    } else {
-                        result.completeExceptionally(exportException)
-                    }
+                override fun onError(
+                    composition: Composition,
+                    exportResult: ExportResult,
+                    exportException: ExportException,
+                ) {
+                    completion.completeExceptionally(
+                        if (isCancelled()) ExportCancelledException() else exportException,
+                    )
                 }
             })
             .build()
 
-        val items = plan.segments.map { segment ->
-            val mediaItem = MediaItem.Builder()
-                .setUri(src.uri)
-                .setClippingConfiguration(
-                    MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(segment.startMs)
-                        .setEndPositionMs(segment.endMs)
-                        .build()
-                )
-                .build()
-            val matrix = GlMatrixTransformation { presentationTimeUs ->
-                val sourceTimeMs = segment.startMs + presentationTimeUs / 1000
-                val rect = CropCalculator.rectAt(state, sourceTimeMs)
-                CropCalculator.toVertexMatrix(rect, displayW, displayH, plan.outWidth, plan.outHeight)
-            }
-            val presentation = Presentation.createForWidthAndHeight(
-                plan.outWidth, plan.outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
-            )
-            EditedMediaItem.Builder(mediaItem)
-                .setEffects(androidx.media3.transformer.Effects(emptyList(), listOf(matrix, presentation)))
-                .build()
-        }
-
-        val composition = Composition.Builder(EditedMediaItemSequence(items)).build()
-        transformer.start(composition, outFile.absolutePath)
-
         try {
-            val holder = ProgressHolder()
-            while (true) {
-                if (isCancelled() && result.isActive) {
+            val captionSegments = if (state.captionsEnabled) state.resolvedCaptionSegments() else emptyList()
+            val presentation = Presentation.createForWidthAndHeight(
+                plan.outWidth,
+                plan.outHeight,
+                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP,
+            )
+            val items = plan.segments.map { segment ->
+                val mediaItem = MediaItem.Builder()
+                    .setUri(source.uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(segment.startMs)
+                            .setEndPositionMs(segment.endMs)
+                            .build(),
+                    )
+                    .build()
+                val matrix = GlMatrixTransformation { presentationTimeUs ->
+                    val sourceTimeMs = segment.startMs + presentationTimeUs / 1_000L
+                    val rect = CropCalculator.rectAt(state, sourceTimeMs)
+                    CropCalculator.toVertexMatrix(
+                        rect,
+                        source.displayWidth,
+                        source.displayHeight,
+                        plan.outWidth,
+                        plan.outHeight,
+                    )
+                }
+                val videoEffects = ArrayList<Effect>(3).apply {
+                    add(matrix)
+                    add(presentation)
+                    if (captionSegments.isNotEmpty()) {
+                        add(OverlayEffect(ImmutableList.of(TimedCaptionOverlay(captionSegments, segment.startMs))))
+                    }
+                }
+                EditedMediaItem.Builder(mediaItem)
+                    .setEffects(androidx.media3.transformer.Effects(emptyList(), videoEffects))
+                    .build()
+            }
+            val composition = Composition.Builder(EditedMediaItemSequence(items)).build()
+            transformer.start(composition, outFile.absolutePath)
+            onProgress(0)
+
+            val progressHolder = ProgressHolder()
+            while (!completion.isCompleted) {
+                if (isCancelled()) {
                     transformer.cancel()
+                    completion.completeExceptionally(ExportCancelledException())
+                    break
                 }
-                val progressState = transformer.getProgress(holder)
-                if (progressState == Transformer.PROGRESS_STATE_AVAILABLE) {
-                    onProgress(holder.progress.coerceIn(0, 100))
+                when (transformer.getProgress(progressHolder)) {
+                    Transformer.PROGRESS_STATE_AVAILABLE -> onProgress(progressHolder.progress.coerceIn(0, 99))
                 }
-                if (result.isCompleted) break
                 delay(200)
             }
-            result.await()
+            val completedFile = completion.await()
+            if (isCancelled()) throw ExportCancelledException()
+            withContext(Dispatchers.IO) {
+                validateCompletedOutput(completedFile, plan.segments.sumOf { it.durationMs })
+            }
+            onProgress(100)
+            completedFile
+        } catch (e: ExportCancelledException) {
+            outFile.delete()
+            throw e
+        } catch (e: CancellationException) {
+            outFile.delete()
+            throw ExportCancelledException()
+        } catch (t: Throwable) {
+            outFile.delete()
+            throw t
         } finally {
-            if (result.isActive) transformer.cancel()
+            if (!completion.isCompleted) transformer.cancel()
+            if (isCancelled()) outFile.delete()
         }
     }
 
-    /** Copies the exported file into the standard gallery via MediaStore. */
-    fun saveToGallery(sourceFile: File, displayName: String): Uri {
-        val resolver = context.contentResolver
+    /** Rejects zero-byte, partial or non-video files before Gallery insertion. */
+    private fun validateCompletedOutput(file: File, expectedDurationMs: Long? = null) {
+        if (!file.isFile || file.length() < 1_024L) {
+            throw IOException("Exporter did not produce a complete video file")
+        }
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(file.absolutePath)
+            val videoFormat = (0 until extractor.trackCount)
+                .map { extractor.getTrackFormat(it) }
+                .firstOrNull { it.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
+                ?: throw IOException("Exported file has no video track")
+            val durationUs = if (videoFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                runCatching { videoFormat.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
+            } else 0L
+            if (durationUs <= 0L) throw IOException("Exported video has no duration")
+            val expectedUs = expectedDurationMs?.times(1_000L)
+            if (expectedUs != null) {
+                // Transformer may trim a few boundary frames, but a cancelled
+                // mux is never allowed to masquerade as a completed short.
+                val minimumExpectedUs = maxOf(250_000L, expectedUs * 75L / 100L - 750_000L)
+                if (durationUs < minimumExpectedUs) {
+                    throw IOException("Exported video duration is incomplete")
+                }
+            }
+        } finally {
+            extractor.release()
+        }
+    }
+
+    /**
+     * Copies a validated completed export into Gallery. If cancellation or an
+     * I/O failure happens during the copy, the pending MediaStore row/legacy
+     * temp file is removed so no corrupt gallery entry is exposed.
+     */
+    fun saveToGallery(
+        sourceFile: File,
+        displayName: String,
+        isCancelled: () -> Boolean,
+    ): Uri {
+        if (isCancelled()) throw ExportCancelledException()
+        validateCompletedOutput(sourceFile)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            saveViaMediaStoreQ(resolver, sourceFile, displayName)
+            saveViaMediaStoreQ(sourceFile, displayName, isCancelled)
         } else {
-            saveLegacy(sourceFile, displayName)
+            saveLegacy(sourceFile, displayName, isCancelled)
+        }
+    }
+
+    /** Best-effort rollback for a save that completed just as its job was cancelled. */
+    fun deleteGalleryOutput(uri: Uri) {
+        runCatching {
+            when (uri.scheme?.lowercase()) {
+                "content" -> context.contentResolver.delete(uri, null, null)
+                "file" -> uri.path?.let(::File)?.delete()
+            }
         }
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    private fun saveViaMediaStoreQ(
-        resolver: android.content.ContentResolver,
-        file: File,
-        displayName: String,
-    ): Uri {
+    private fun saveViaMediaStoreQ(file: File, displayName: String, isCancelled: () -> Boolean): Uri {
+        val resolver = context.contentResolver
         val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Video.Media.DISPLAY_NAME, displayName.ensureMp4Name())
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/$GALLERY_FOLDER")
             put(MediaStore.Video.Media.IS_PENDING, 1)
         }
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val uri = resolver.insert(collection, values) ?: throw IOException("MediaStore insert failed")
-        resolver.openOutputStream(uri)?.use { out ->
-            file.inputStream().use { input -> input.copyTo(out) }
-        } ?: throw IOException("Could not open output stream")
-        values.clear()
-        values.put(MediaStore.Video.Media.IS_PENDING, 0)
-        resolver.update(uri, values, null, null)
-        return uri
+        var uri: Uri? = null
+        try {
+            uri = resolver.insert(collection, values) ?: throw IOException("MediaStore could not create a gallery entry")
+            resolver.openOutputStream(uri, "w")?.use { output ->
+                copyFileCancellable(file, output, isCancelled)
+            } ?: throw IOException("Could not open the gallery output stream")
+            if (isCancelled()) throw ExportCancelledException()
+            values.clear()
+            values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            if (resolver.update(uri, values, null, null) != 1) throw IOException("Could not finalize the gallery entry")
+            // Cancellation can arrive in the tiny window after MediaStore has
+            // exposed the row. Delete it before returning so a cancelled export
+            // never appears as a completed gallery video.
+            if (isCancelled()) throw ExportCancelledException()
+            return uri
+        } catch (t: Throwable) {
+            uri?.let { resolver.delete(it, null, null) }
+            throw t
+        }
     }
 
-    private fun saveLegacy(file: File, displayName: String): Uri {
-        @Suppress("DEPRECATION")
-        val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
-        val dir = File(moviesDir, GALLERY_FOLDER)
-        if (!dir.exists()) dir.mkdirs()
-        val dest = File(dir, displayName)
-        file.inputStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
-        MediaScannerConnection.scanFile(context, arrayOf(dest.absolutePath), arrayOf("video/mp4"), null)
-        val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DATA, dest.absolutePath)
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+    private fun saveLegacy(file: File, displayName: String, isCancelled: () -> Boolean): Uri {
+        if (context.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            throw SecurityException("Storage permission is required to save on Android 9 and below")
         }
         @Suppress("DEPRECATION")
-        return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
+        val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+        val directory = File(moviesDir, GALLERY_FOLDER)
+        if (!directory.exists() && !directory.mkdirs()) throw IOException("Could not create Movies/$GALLERY_FOLDER")
+        val requestedName = displayName.ensureMp4Name()
+        val stem = requestedName.substringBeforeLast('.', requestedName)
+        val extension = requestedName.substringAfterLast('.', "mp4")
+        var suffix = 0
+        var destination = File(directory, requestedName)
+        while (destination.exists()) {
+            suffix++
+            destination = File(directory, "${stem}_$suffix.$extension")
+        }
+        val partial = File(directory, ".${destination.name}.part")
+        partial.delete()
+        var finalized = false
+        try {
+            FileOutputStream(partial).use { stream ->
+                BufferedOutputStream(stream, COPY_BUFFER_BYTES).use { output ->
+                    FileInputStream(file).use { input ->
+                        copyStreamCancellable(input, output, isCancelled)
+                    }
+                    output.flush()
+                    stream.fd.sync()
+                }
+            }
+            if (isCancelled()) throw ExportCancelledException()
+            if (!partial.renameTo(destination)) throw IOException("Could not finalize the gallery export")
+            finalized = true
+            // Keep the cancellation guard on both sides of the final rename;
+            // a valid-but-cancelled legacy file must not be left in Movies.
+            if (isCancelled()) throw ExportCancelledException()
+            MediaScannerConnection.scanFile(context, arrayOf(destination.absolutePath), arrayOf("video/mp4"), null)
+            if (isCancelled()) throw ExportCancelledException()
+            return Uri.fromFile(destination)
+        } catch (t: Throwable) {
+            partial.delete()
+            if (finalized) destination.delete()
+            throw t
+        }
     }
+
+    private fun copyFileCancellable(file: File, output: java.io.OutputStream, isCancelled: () -> Boolean) {
+        FileInputStream(file).use { input -> copyStreamCancellable(input, output, isCancelled) }
+    }
+
+    private fun copyStreamCancellable(input: java.io.InputStream, output: java.io.OutputStream, isCancelled: () -> Boolean) {
+        val buffer = ByteArray(COPY_BUFFER_BYTES)
+        while (true) {
+            if (isCancelled()) throw ExportCancelledException()
+            val count = input.read(buffer)
+            if (count < 0) break
+            output.write(buffer, 0, count)
+        }
+    }
+
+    private fun String.ensureMp4Name(): String = if (endsWith(".mp4", ignoreCase = true)) this else "$this.mp4"
 }

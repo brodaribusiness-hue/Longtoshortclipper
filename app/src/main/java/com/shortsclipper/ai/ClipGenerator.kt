@@ -3,7 +3,6 @@ package com.shortsclipper.ai
 import com.shortsclipper.model.ClipCandidate
 import com.shortsclipper.model.TargetDuration
 import com.shortsclipper.model.Transcript
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -18,26 +17,60 @@ object ClipGenerator {
     private const val START_PAD_MS = 120L
     private const val END_PAD_MS = 200L
 
+    /**
+     * Converts transcript timing into video-bounded sentence slots. Anchor
+     * indices intentionally address this normalized list, so callers that
+     * display analysis progress can reuse it without scoring content beyond
+     * the playable source duration.
+     */
+    fun prepareSentences(
+        transcript: Transcript,
+        videoDurationMs: Long,
+    ): List<HighlightAnalyzer.Sentence> {
+        if (videoDurationMs <= 0L) return emptyList()
+        return HighlightAnalyzer.splitSentences(transcript.words)
+            .filter { it.endMs > 0L && it.startMs < videoDurationMs }
+            .mapIndexed { index, sentence -> sentence.copy(index = index) }
+    }
+
     fun generate(
         transcript: Transcript,
-
         videoDurationMs: Long,
         target: TargetDuration,
     ): List<ClipCandidate> {
-        if (videoDurationMs <= 0L) return emptyList()
-        val sentences = HighlightAnalyzer.splitSentences(transcript.words)
-        if (sentences.isEmpty()) return emptyList()
+        val sentences = prepareSentences(transcript, videoDurationMs)
+        return generate(
+            sentences = sentences,
+            anchors = HighlightAnalyzer.findAnchors(sentences),
+            videoDurationMs = videoDurationMs,
+            target = target,
+        )
+    }
 
-        val anchors = HighlightAnalyzer.findAnchors(sentences)
-        if (anchors.isEmpty()) {
+    /**
+     * Builds and scores candidates from a previously analyzed sentence list.
+     * This lets the analysis UI perform sentence parsing and anchor discovery
+     * once, rather than doing the same CPU work again while generating clips.
+     */
+    fun generate(
+        sentences: List<HighlightAnalyzer.Sentence>,
+        anchors: List<HighlightAnalyzer.Anchor>,
+        videoDurationMs: Long,
+        target: TargetDuration,
+    ): List<ClipCandidate> {
+        if (videoDurationMs <= 0L || sentences.isEmpty()) return emptyList()
+        // Ignore malformed externally supplied anchor indices rather than
+        // letting persisted/transient analysis state crash generation.
+        val validAnchors = anchors.filter { it.sentenceIndex in sentences.indices }
+        if (validAnchors.isEmpty()) {
             // No strong signal: fall back to the densest sentences as anchors.
             val densest = sentences.sortedByDescending { it.wordsPerSecond }
                 .take(3)
                 .map { HighlightAnalyzer.Anchor(it.index, 0.32f, HighlightAnalyzer.signalsFor(it, sentences)) }
             if (densest.isEmpty()) return emptyList()
-            return buildCandidates(sentences, densest, videoDurationMs, target, transcript)
+            return buildCandidates(sentences, densest, videoDurationMs, target)
         }
-        return buildCandidates(sentences, anchors, videoDurationMs, target, transcript)
+        return buildCandidates(sentences, validAnchors, videoDurationMs, target)
     }
 
     private fun buildCandidates(
@@ -55,7 +88,7 @@ object ClipGenerator {
                 target.seconds
             }
             val candidate = buildOne(sentences, anchor, targetSecs, videoDurationMs, raw.size)
-            raw.add(candidate)
+            if (candidate.endMs > candidate.startMs) raw.add(candidate)
         }
 
         // Overlap suppression: keep the higher-scored clip of overlapping pairs.
@@ -117,8 +150,8 @@ object ClipGenerator {
             endIdx--
         }
 
-        val startMs = max(0L, sentences[startIdx].startMs - START_PAD_MS)
-        val endMs = min(videoDurationMs, sentences[endIdx].endMs + END_PAD_MS)
+        val startMs = max(0L, sentences[startIdx].startMs - START_PAD_MS).coerceAtMost(videoDurationMs)
+        val endMs = min(videoDurationMs, sentences[endIdx].endMs + END_PAD_MS).coerceAtLeast(startMs)
         val scored = ClipScorer.score(sentences, startIdx, endIdx, targetSecs)
 
         val title = sentences[anchor.sentenceIndex].text
@@ -127,7 +160,7 @@ object ClipGenerator {
             .ifEmpty { "Clip ${index + 1}" }
 
         return ClipCandidate(
-            id = "cand_${startMs}_${endMs}",
+            id = "cand_${startMs}_${endMs}_$index",
             startMs = startMs,
             endMs = endMs,
             durationMs = endMs - startMs,

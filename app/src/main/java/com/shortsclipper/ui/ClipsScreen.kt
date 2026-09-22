@@ -1,5 +1,6 @@
 package com.shortsclipper.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -41,6 +43,8 @@ import com.shortsclipper.ui.theme.TextSecondary
 @Composable
 fun ClipsScreen(
     viewModel: EditorViewModel,
+    onOpenAnalysis: () -> Unit,
+    onReturnToEditor: () -> Unit,
     onClose: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
@@ -53,7 +57,7 @@ fun ClipsScreen(
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             for (target in TargetDuration.entries) {
@@ -93,7 +97,7 @@ fun ClipsScreen(
                 )
                 if (state.transcript == null) {
                     Button(
-                        onClick = onClose,
+                        onClick = onOpenAnalysis,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
                         modifier = Modifier.padding(top = 12.dp),
                     ) {
@@ -110,10 +114,11 @@ fun ClipsScreen(
                         isSelected = state.selectedCandidateId == candidate.id,
                         onSelect = {
                             viewModel.selectCandidate(candidate.id)
-                            onClose()
+                            onReturnToEditor()
                         },
                         onPreview = {
                             viewModel.selectCandidate(candidate.id)
+                            onReturnToEditor()
                             viewModel.play()
                         },
                         onReject = { viewModel.rejectCandidate(candidate.id) },

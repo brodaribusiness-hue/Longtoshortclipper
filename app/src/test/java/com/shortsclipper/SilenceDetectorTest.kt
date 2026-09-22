@@ -63,10 +63,29 @@ class SilenceDetectorTest {
     }
 
     @Test
+    fun `non-finite envelope values are treated as silence instead of poisoning detection`() {
+        val env = envelopeOf(10 to 0.3f) + listOf(Float.NaN, Float.POSITIVE_INFINITY) + envelopeOf(10 to 0.3f)
+        val silences = SilenceDetector.detect(env, SilenceDetector.Config(minSilenceMs = 100))
+        assertEquals(1, silences.size)
+        assertEquals(1_000L, silences.single().startMs)
+    }
+
+    @Test
     fun `threshold follows the noise floor for quiet recordings`() {
         // Whole recording is quiet; threshold must adapt via the noise floor.
         val env = envelopeOf(20 to 0.002f, 20 to 0.0001f, 20 to 0.002f)
         val silences = SilenceDetector.detect(env)
         assertEquals(1, silences.size)
+    }
+
+    @Test
+    fun `non-finite configured threshold falls back to a usable default`() {
+        val env = envelopeOf(20 to 0.3f, 8 to 0.0001f, 20 to 0.3f)
+        val silences = SilenceDetector.detect(
+            env,
+            SilenceDetector.Config(thresholdDb = Float.NaN, minSilenceMs = 600),
+        )
+        assertEquals(1, silences.size)
+        assertEquals(2_000L, silences.single().startMs)
     }
 }

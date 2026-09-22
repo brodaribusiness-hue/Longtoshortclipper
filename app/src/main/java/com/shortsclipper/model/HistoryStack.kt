@@ -22,7 +22,8 @@ class HistoryStack<T>(private val maxSize: Int = 100) {
         // Truncate redo branch.
         while (entries.size > index + 1) entries.removeAt(entries.size - 1)
 
-        val coalesce = tag != null && tag == lastTag && coalesceMs > 0 && nowMs - lastTagTimeMs <= coalesceMs
+        val coalesce = tag != null && tag == lastTag && coalesceMs > 0 &&
+            nowMs >= lastTagTimeMs && nowMs - lastTagTimeMs <= coalesceMs
         if (coalesce && entries.isNotEmpty()) {
             entries[index] = item
         } else {

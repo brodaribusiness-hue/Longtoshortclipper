@@ -50,6 +50,18 @@ class TranscriptionTest {
     }
 
     @Test
+    fun `control token ends rather than merges adjacent words`() {
+        val words = WordAssembler.assemble(
+            listOf(
+                token("▁first", 0, 100),
+                token("<|notimestamps|>", 100, 110),
+                token("second", 120, 200),
+            ),
+        )
+        assertEquals(listOf("first", "second"), words.map { it.text })
+    }
+
+    @Test
     fun `confidence is averaged over word tokens`() {
         val words = WordAssembler.assemble(
             listOf(
