@@ -49,6 +49,24 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon assembleDebug testDebugUnitTest --stacktrace 2>&1 | tee build_output.log
 
+      # Surface the useful Gradle/compiler tail as check annotations as well as
+      # an artifact. This keeps failures diagnosable when artifact/log blob
+      # downloads are unavailable from a restricted network.
+      - name: Surface Android build diagnostics
+        if: failure()
+        run: |
+          set +e
+          {
+            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:" build_output.log 2>/dev/null | tail -80
+            echo "--- build log tail ---"
+            tail -80 build_output.log 2>/dev/null
+          } > /tmp/build-diagnostics.txt
+          while IFS= read -r line; do
+            [ -z "$line" ] || echo "::error title=Android build diagnostics::$line"
+          done < /tmp/build-diagnostics.txt
+          cat /tmp/build-diagnostics.txt >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
       - name: Build unsigned release APK
         run: |
           set -o pipefail
