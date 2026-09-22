@@ -50,64 +50,57 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon assembleDebug testDebugUnitTest --stacktrace 2>&1 | tee build_output.log
 
-      - name: Run Android emulator smoke tests
-        env:
-          AVD_NAME: shortsclipper-api30
+      # Use the maintained emulator action rather than open-coding AVD startup.
+      # It handles the emulator's serial/port handshake and reports boot failures
+      # with diagnostics, which is more reliable across changing hosted images.
+      - name: Enable KVM access for emulator
         run: |
-          set -euo pipefail
-          AVD_MANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
-          ADB="$ANDROID_HOME/platform-tools/adb"
-          EMULATOR="$ANDROID_HOME/emulator/emulator"
-          IMAGE="system-images;android-30;google_apis;x86_64"
+          if [ -e /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
 
-          mkdir -p "$HOME/.android"
-          touch "$HOME/.android/repositories.cfg"
-          echo "no" | "$AVD_MANAGER" create avd --force --name "$AVD_NAME" --package "$IMAGE"
-          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+      - name: Run Android emulator smoke tests
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          avd-name: shortsclipper-api30
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -no-metrics
+          disable-animations: true
+          script: |
+            set -o pipefail
+            ./gradlew --no-daemon connectedDebugAndroidTest --stacktrace 2>&1 | tee -a build_output.log
 
-          "$EMULATOR" -avd "$AVD_NAME" -no-window -no-audio -no-boot-anim \
-            -gpu swiftshader_indirect -no-snapshot -no-metrics > /tmp/android-emulator.log 2>&1 &
-          emulator_pid=$!
-          trap '"$ADB" emu kill >/dev/null 2>&1 || true; kill "$emulator_pid" >/dev/null 2>&1 || true' EXIT
-
-          timeout 240 "$ADB" wait-for-device
-          booted=false
-          for _ in $(seq 1 180); do
-            if [ "$("$ADB" shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; then
-              booted=true
-              break
-            fi
-            sleep 2
-          done
-          if [ "$booted" != true ]; then
-            cat /tmp/android-emulator.log
-            exit 1
-          fi
-          "$ADB" shell input keyevent 82
-          "$ADB" shell settings put global window_animation_scale 0
-          "$ADB" shell settings put global transition_animation_scale 0
-          "$ADB" shell settings put global animator_duration_scale 0
-          set -o pipefail
-          ./gradlew --no-daemon connectedDebugAndroidTest --stacktrace 2>&1 | tee -a build_output.log
-
-      # Surface useful Gradle/compiler output as check annotations as well as an
-      # artifact. This keeps failures diagnosable from restricted networks where
-      # GitHub Actions raw-log or artifact blob downloads are unavailable.
+      # Preserve focused diagnostics in the job summary and add one meaningful
+      # check annotation. Do not turn successful Gradle task lines into errors:
+      # that can hide the actual emulator or test failure.
       - name: Surface Android build diagnostics
         if: failure()
         run: |
           set +e
+          error_lines=$(grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:|^> Task .* FAILED" build_output.log 2>/dev/null | tail -100)
           {
-            grep -aE "^e: |error: |Execution failed for task|FAILURE: Build failed|Caused by:|^\* What went wrong:" build_output.log 2>/dev/null | tail -100
-            echo "--- build log tail ---"
-            tail -100 build_output.log 2>/dev/null
-            echo "--- emulator log tail ---"
-            tail -80 /tmp/android-emulator.log 2>/dev/null
-          } > /tmp/build-diagnostics.txt
-          while IFS= read -r line; do
-            [ -z "$line" ] || echo "::error title=Android build diagnostics::$line"
-          done < /tmp/build-diagnostics.txt
-          cat /tmp/build-diagnostics.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "## Android verification diagnostics"
+            if [ -n "$error_lines" ]; then
+              echo '```text'
+              printf '%s\n' "$error_lines"
+              echo '```'
+            else
+              echo "No Gradle error was captured. Inspect the failed emulator-action step above."
+            fi
+            echo "### Build-output tail"
+            echo '```text'
+            tail -100 build_output.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/build-diagnostics.md
+          cat /tmp/build-diagnostics.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$error_lines" ]; then
+            first_error=$(printf '%s\n' "$error_lines" | tail -1 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+            echo "::error title=Android build diagnostics::$first_error"
+          else
+            echo "::error title=Android verification failed::No Gradle error was captured; inspect the failed emulator-action step above."
+          fi
           exit 0
 
       - name: Build unsigned release APK
