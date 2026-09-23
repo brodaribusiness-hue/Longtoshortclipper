@@ -23,6 +23,8 @@ import kotlin.math.sqrt
  * MediaExtractor; audio is streamed through a decoder to a temp PCM file
  * (16 kHz mono float32) - a long video is NEVER loaded into RAM at once.
  */
+class AudioDecodeCancelledException : Exception("Audio decode cancelled")
+
 object VideoManager {
 
     const val TARGET_SAMPLE_RATE = 16000
@@ -61,13 +63,18 @@ object VideoManager {
                     val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
                     if (mime.startsWith("video/") && videoMime == null) {
                         videoMime = mime
-                        width = format.getInteger(MediaFormat.KEY_WIDTH)
-                        height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                        if (format.containsKey(MediaFormat.KEY_WIDTH) && format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                            width = format.getInteger(MediaFormat.KEY_WIDTH)
+                            height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                        }
                         if (format.containsKey(MediaFormat.KEY_ROTATION)) {
                             rotation = format.getInteger(MediaFormat.KEY_ROTATION)
                         }
                         if (fps <= 0f && format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                            fps = format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat()
+                            fps = runCatching { format.getFloat(MediaFormat.KEY_FRAME_RATE) }
+                                .getOrElse {
+                                    runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() }.getOrDefault(0f)
+                                }
                         }
                     } else if (mime.startsWith("audio/") && audioMime == null) {
                         audioMime = mime
@@ -98,7 +105,7 @@ object VideoManager {
                 displayWidth = if (rotated) height else width,
                 displayHeight = if (rotated) width else height,
                 fps = fps,
-                hasAudio = hasAudio,
+                hasAudio = hasAudio || audioMime != null,
                 videoMimeType = videoMime,
                 audioMimeType = audioMime,
             )
@@ -143,6 +150,7 @@ object VideoManager {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var pcmFile: File? = null
+        var out: DataOutputStreamLittleEndian? = null
         try {
             extractor.setDataSource(context, uri, null)
             var trackIndex = -1
@@ -165,16 +173,29 @@ object VideoManager {
             codec.start()
 
             pcmFile = File(context.cacheDir, "audio_${System.nanoTime()}.pcm")
-            val out = DataOutputStreamLittleEndian(BufferedOutputStream(FileOutputStream(pcmFile), 1 shl 16))
+            val pcmOut = DataOutputStreamLittleEndian(BufferedOutputStream(FileOutputStream(pcmFile), 1 shl 16))
+            out = pcmOut
 
             var srcSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var srcChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            var srcChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+            var pcmEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT
             var resampler = StreamResampler(srcSampleRate, TARGET_SAMPLE_RATE)
 
             val envelope = ArrayList<Float>()
             var windowSumSquares = 0.0
             var windowCount = 0
             val windowSamples = TARGET_SAMPLE_RATE * ENVELOPE_STEP_MS / 1000
+
+            fun consume(sample: Float) {
+                windowSumSquares += (sample * sample).toDouble()
+                windowCount++
+                if (windowCount >= windowSamples) {
+                    envelope.add(sqrt(windowSumSquares / windowCount).toFloat())
+                    windowSumSquares = 0.0
+                    windowCount = 0
+                }
+                for (o in resampler.push(sample)) pcmOut.writeFloatLe(o)
+            }
 
             val info = MediaCodec.BufferInfo()
             var sawInputEos = false
@@ -183,11 +204,7 @@ object VideoManager {
             val durationUs = runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
 
             while (!sawOutputEos) {
-                if (isCancelled()) {
-                    out.close()
-                    pcmFile.delete()
-                    return null
-                }
+                if (isCancelled()) throw AudioDecodeCancelledException()
                 if (!sawInputEos) {
                     val inIndex = codec.dequeueInputBuffer(10_000)
                     if (inIndex >= 0) {
@@ -207,31 +224,36 @@ object VideoManager {
                     outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val of = codec.outputFormat
                         srcSampleRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        srcChannels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        srcChannels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                        if (of.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                            pcmEncoding = of.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                        }
                         resampler = StreamResampler(srcSampleRate, TARGET_SAMPLE_RATE)
                     }
                     outIndex >= 0 -> {
-                        val outBuffer = codec.getOutputBuffer(outIndex)!!
-                        if (info.size > 0) {
-                            val shortBuffer = outBuffer.order(ByteOrder.nativeOrder()).asShortBuffer()
-                            shortBuffer.position(info.offset / 2)
-                            shortBuffer.limit((info.offset + info.size) / 2)
-                            val samples = shortBuffer
-                            val frames = samples.remaining() / srcChannels
-                            for (i in 0 until frames) {
-                                var mono = 0f
-                                for (c in 0 until srcChannels) mono += samples.get(i * srcChannels + c)
-                                mono /= srcChannels
-                                val v = mono / 32768f
-                                windowSumSquares += (v * v).toDouble()
-                                windowCount++
-                                if (windowCount >= windowSamples) {
-                                    envelope.add(sqrt(windowSumSquares / windowCount).toFloat())
-                                    windowSumSquares = 0.0
-                                    windowCount = 0
+                        val outBuffer = codec.getOutputBuffer(outIndex)
+                        if (outBuffer != null && info.size > 0) {
+                            outBuffer.order(ByteOrder.nativeOrder())
+                            if (pcmEncoding == android.media.AudioFormat.ENCODING_PCM_FLOAT) {
+                                val samples = outBuffer.asFloatBuffer()
+                                val start = info.offset / 4
+                                val frames = (info.size / 4) / srcChannels
+                                for (i in 0 until frames) {
+                                    var mono = 0f
+                                    val base = start + i * srcChannels
+                                    for (c in 0 until srcChannels) mono += samples.get(base + c)
+                                    consume(mono / srcChannels)
                                 }
-                                val resampled = resampler.push(v)
-                                for (o in resampled) out.writeFloatLe(o)
+                            } else {
+                                val samples = outBuffer.asShortBuffer()
+                                val start = info.offset / 2
+                                val frames = (info.size / 2) / srcChannels
+                                for (i in 0 until frames) {
+                                    var mono = 0f
+                                    val base = start + i * srcChannels
+                                    for (c in 0 until srcChannels) mono += samples.get(base + c)
+                                    consume((mono / srcChannels) / 32768f)
+                                }
                             }
                             decodedUs = max(decodedUs, info.presentationTimeUs)
                             if (durationUs > 0) onProgress(min(1f, decodedUs.toFloat() / durationUs))
@@ -242,13 +264,15 @@ object VideoManager {
                 }
             }
             if (windowCount > 0) envelope.add(sqrt(windowSumSquares / windowCount).toFloat())
-            out.close()
+            pcmOut.close()
+            out = null
 
             return AudioDecodeResult(pcmFile, envelope, TARGET_SAMPLE_RATE, decodedUs / 1000)
         } catch (t: Throwable) {
             pcmFile?.delete()
             throw t
         } finally {
+            runCatching { out?.close() }
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             runCatching { extractor.release() }

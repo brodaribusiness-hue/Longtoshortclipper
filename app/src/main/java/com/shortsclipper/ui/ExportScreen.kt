@@ -83,6 +83,7 @@ fun ExportScreen(
             RadioButton(
                 selected = state.exportQuality == QualityMode.SAME_AS_ORIGINAL,
                 onClick = { viewModel.setExportQuality(QualityMode.SAME_AS_ORIGINAL) },
+                enabled = !exportState.isBusy,
                 colors = RadioButtonDefaults.colors(selectedColor = Accent),
             )
             Column {
@@ -130,6 +131,13 @@ fun ExportScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
                 ) {
                     Text("Back to editor", fontSize = 14.sp)
+                }
+                Button(
+                    onClick = { viewModel.startExport() },
+                    modifier = Modifier.fillMaxWidth().height(46.dp).padding(top = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = BgSecondary, contentColor = TextPrimary),
+                ) {
+                    Text("Export again", fontSize = 14.sp)
                 }
             }
             com.shortsclipper.model.ExportPhase.FAILED -> {

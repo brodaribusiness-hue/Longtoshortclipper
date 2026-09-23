@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TextureView is required: SurfaceView is a separate window and ignores
+     Compose clip/transform, which leaves a black or uncropped preview. -->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/editor_player_view"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black"
+    app:surface_type="texture_view"
+    app:resize_mode="fit"
+    app:use_controller="false"
+    app:show_buffering="never"
+    app:shutter_background_color="@android:color/black" />

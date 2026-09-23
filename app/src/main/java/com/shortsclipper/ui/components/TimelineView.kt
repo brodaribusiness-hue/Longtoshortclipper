@@ -67,6 +67,7 @@ fun TimelineView(
     selectionEndMs: Long,
     playheadMs: Long,
     envelope: List<Float>,
+    envelopeStepMs: Int = 100,
     zoom: Float,
     removals: List<com.shortsclipper.model.SilenceEdit>,
     onSelection: (Long, Long) -> Unit,
@@ -158,11 +159,12 @@ fun TimelineView(
                 if (envelope.isNotEmpty() && maxRms > 0f) {
                     val barCount = (size.width / 6f).toInt().coerceAtLeast(1)
                     val stepMs = durationMs / barCount
+                    val envelopeStep = envelopeStepMs.coerceAtLeast(1)
                     for (b in 0 until barCount) {
                         val fromMs = b * stepMs
                         val toMs = fromMs + stepMs
-                        val fromIdx = (fromMs / 100).toInt().coerceIn(0, envelope.size - 1)
-                        val toIdx = (toMs / 100).toInt().coerceIn(fromIdx + 1, envelope.size)
+                        val fromIdx = (fromMs / envelopeStep).toInt().coerceIn(0, envelope.size - 1)
+                        val toIdx = (toMs / envelopeStep).toInt().coerceIn(fromIdx + 1, envelope.size)
                         var peak = 0f
                         for (i in fromIdx until toIdx) peak = max(peak, envelope[i])
                         val h = (peak / maxRms) * (size.height * 0.82f)
@@ -184,8 +186,7 @@ fun TimelineView(
                 }
 
                 // Silence removals overlay.
-                val activeRemovals = currentRemovals
-                for (r in activeRemovals) {
+                for (r in removals) {
                     drawRect(
                         color = Color(0xFFEF4444).copy(alpha = 0.25f),
                         topLeft = Offset((r.startMs / msPerPx), 0f),
@@ -227,8 +228,6 @@ fun TimelineView(
                 drawCircle(BgControl, radius = 3.5f, center = Offset(px, 8f))
             }
 
-            // Second canvas just for removals capture (kept in a var used above).
-            currentRemovals = removalsLocal
         }
 
         Row(
@@ -250,8 +249,3 @@ fun TimelineView(
         }
     }
 }
-
-// Timeline needs the applied removals for the red overlay; set by EditorScreen
-// right before composing. Kept as a small composition-local style holder.
-private var currentRemovals: List<com.shortsclipper.model.SilenceEdit> = emptyList()
-private var removalsLocal: List<com.shortsclipper.model.SilenceEdit> = emptyList()

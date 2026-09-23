@@ -4,10 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,11 +46,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shortsclipper.model.SmoothingPreset
+import com.shortsclipper.tracking.TrackingEngine
 import com.shortsclipper.ui.components.CutIcon
 import com.shortsclipper.ui.components.PauseIcon
 import com.shortsclipper.ui.components.PlayIcon
@@ -66,6 +71,7 @@ import com.shortsclipper.ui.theme.Success
 import com.shortsclipper.ui.theme.TextPrimary
 import com.shortsclipper.ui.theme.TextSecondary
 import com.shortsclipper.ui.theme.Warning
+import com.shortsclipper.video.CropCalculator
 
 /**
  * Main editor. Layout follows the specification:
@@ -87,6 +93,20 @@ fun EditorScreen(
 
     var showTrackingSheet by remember { mutableStateOf(false) }
     var showSilenceSheet by remember { mutableStateOf(false) }
+    val faceBoxes by viewModel.faceSelectionBoxes.collectAsState()
+    val pickingFace by viewModel.showFacePicker.collectAsState()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) viewModel.pause()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.pause()
+        }
+    }
 
     val source = state.source
     if (source == null) {
@@ -124,13 +144,14 @@ fun EditorScreen(
             }
         }
 
-        // ---- Video preview -------------------------------------------------
-        Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+        // ---- Video preview (fitted 9:16, same crop the exporter writes) ---
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            val fittedWidth = maxHeight * (9f / 16f)
+            val previewWidth = if (maxWidth < fittedWidth) maxWidth else fittedWidth
+            val previewHeight = previewWidth / (9f / 16f)
             VideoPreview(
                 viewModel = viewModel,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatioFrom(source.displayWidth, source.displayHeight),
+                modifier = Modifier.size(previewWidth, previewHeight),
             )
             if (trackingProgress >= 0f) {
                 Column(
@@ -145,7 +166,7 @@ fun EditorScreen(
                         color = Accent,
                         modifier = Modifier.padding(top = 8.dp).width(180.dp),
                     )
-                    TextButton(onClick = { viewModel.cancelFaceDetectionPass() }) {
+                    TextButton(onClick = { viewModel.setAutoTracking(false) }) {
                         Text("Cancel", color = TextSecondary, fontSize = 12.sp)
                     }
                 }
@@ -191,8 +212,15 @@ fun EditorScreen(
             Spacer(Modifier.width(8.dp))
             Text("Auto Face Tracking", color = TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
             if (state.tracking.targetFaceId != null) {
-                Text("Face #${state.tracking.targetFaceId} · tap preview faces to switch", color = TextSecondary, fontSize = 10.sp)
-                Spacer(Modifier.width(8.dp))
+                Text("Face #${state.tracking.targetFaceId}", color = TextSecondary, fontSize = 10.sp)
+                Spacer(Modifier.width(6.dp))
+            }
+            if (faceBoxes.isNotEmpty()) {
+                TextButton(onClick = {
+                    if (pickingFace) viewModel.dismissFacePicker() else viewModel.revealFacePicker()
+                }) {
+                    Text(if (pickingFace) "Hide" else "Faces", color = Accent, fontSize = 11.sp)
+                }
             }
             Switch(
                 checked = state.tracking.autoEnabled,
@@ -208,6 +236,7 @@ fun EditorScreen(
             selectionEndMs = state.timeline.selectionEndMs,
             playheadMs = playhead,
             envelope = state.audioEnvelope,
+            envelopeStepMs = state.envelopeStepMs,
             zoom = state.timeline.zoom,
             removals = state.silenceRemovals,
             onSelection = { start, end -> viewModel.setSelection(start, end) },
@@ -263,12 +292,10 @@ private fun EditorAction(label: String, modifier: Modifier = Modifier, onClick: 
     }
 }
 
-private fun Modifier.aspectRatioFrom(w: Int, h: Int): Modifier =
-    if (h > 0 && w > 0) this.aspectRatio(w.toFloat() / h) else this
-
 @Composable
 private fun TrackingSheetContent(viewModel: EditorViewModel) {
     val state by viewModel.state.collectAsState()
+    val playhead by viewModel.playheadMs.collectAsState()
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text("Tracking / Reframe", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         Text(
@@ -276,6 +303,18 @@ private fun TrackingSheetContent(viewModel: EditorViewModel) {
             color = TextSecondary,
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
+        )
+
+        val zoomNow = TrackingEngine.evaluateAt(state.tracking, playhead).zoom
+        Text("Reframe zoom ${"%.2f".format(zoomNow)}×", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Slider(
+            value = zoomNow,
+            onValueChange = { z ->
+                val target = TrackingEngine.evaluateAt(viewModel.state.value.tracking, viewModel.playheadMs.value)
+                viewModel.dragKeyframeAtPlayhead(target.centerX, target.centerY, z)
+            },
+            valueRange = 1f..CropCalculator.MAX_ZOOM,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent),
         )
 
         Text("Tracking smoothing", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
