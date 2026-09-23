@@ -2,9 +2,11 @@ package com.shortsclipper.ui
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.shortsclipper.ai.SilenceDetector
@@ -57,6 +59,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     val isPreparingAudio = MutableStateFlow(false)
     val audioPreparationError = MutableStateFlow<String?>(null)
+    val playerError = MutableStateFlow<String?>(null)
     val exportState = MutableStateFlow(ExportState())
     val trackingPassProgress = MutableStateFlow(-1f)
 
@@ -134,9 +137,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     VideoManager.readMetadata(getApplication(), uri, displayName)
                 }
                 if (source.durationMs <= 0 || source.displayWidth <= 0 || source.displayHeight <= 0) {
+                    Log.e(TAG, "Import rejected: duration=${source.durationMs} ${source.displayWidth}x${source.displayHeight} uri=$uri")
                     onResult(false, "This file could not be read as a video.")
                     return@launch
                 }
+                Log.i(TAG, "Import OK uri=$uri ${source.displayWidth}x${source.displayHeight} ${source.durationMs}ms mime=${source.videoMimeType}")
                 val project = repository.createProject(source.displayName.removeSuffix(".mp4").ifBlank { "New clip" })
                     .copy(source = source, timeline = com.shortsclipper.model.TimelineState(0L, source.durationMs))
                 synchronized(history) { history.clear(); history.push(project) }
@@ -152,18 +157,38 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun setupPlayer() {
         val source = _state.value.source ?: return
+        val mediaUri = Uri.parse(source.uri)
+        if (mediaUri.scheme.isNullOrBlank() || source.uri.isBlank()) {
+            playerError.value = "Invalid video URI."
+            Log.e(TAG, "setupPlayer: blank/invalid uri='${source.uri}'")
+            return
+        }
+        playerError.value = null
         val p = player ?: ExoPlayer.Builder(getApplication()).build().also {
             player = it
             it.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     this@EditorViewModel.isPlaying.value = isPlaying
                 }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    val message = "Playback failed (${error.errorCodeName}): ${error.message ?: "cannot open this video"}"
+                    playerError.value = message
+                    Log.e(TAG, message, error)
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        playerError.value = null
+                    }
+                }
             })
         }
         p.pause()
-        p.setMediaItem(MediaItem.fromUri(Uri.parse(source.uri)))
+        p.setMediaItem(MediaItem.fromUri(mediaUri))
         p.prepare()
         p.seekTo(_state.value.timeline.selectionStartMs.coerceAtLeast(0))
+        Log.i(TAG, "Player prepared for $mediaUri")
     }
 
     // ------------------------------------------------------------- playback
