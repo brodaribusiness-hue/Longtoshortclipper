@@ -86,7 +86,10 @@ object ExportPlanner {
                 merged.add(seg)
             }
         }
-        return merged.filter { it.durationMs >= MIN_SEGMENT_MS }
+        val filtered = merged.filter { it.durationMs >= MIN_SEGMENT_MS }
+        // Keep remaining micro-segments when they are the only playable content
+        // (e.g. a source shorter than MIN_SEGMENT_MS).
+        return filtered.ifEmpty { merged.filter { it.durationMs > 0L } }
     }
 }
 

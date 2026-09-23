@@ -2,9 +2,11 @@ package com.shortsclipper.ui
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.shortsclipper.ai.SilenceDetector
@@ -57,6 +59,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     val isPreparingAudio = MutableStateFlow(false)
     val audioPreparationError = MutableStateFlow<String?>(null)
+    val playerError = MutableStateFlow<String?>(null)
     val exportState = MutableStateFlow(ExportState())
     val trackingPassProgress = MutableStateFlow(-1f)
 
@@ -133,15 +136,18 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val source = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     VideoManager.readMetadata(getApplication(), uri, displayName)
                 }
-                if (source.durationMs <= 0 || source.displayWidth <= 0) {
+                if (source.durationMs <= 0 || source.displayWidth <= 0 || source.displayHeight <= 0) {
+                    Log.e(TAG, "Import rejected: duration=${source.durationMs} ${source.displayWidth}x${source.displayHeight} uri=$uri")
                     onResult(false, "This file could not be read as a video.")
                     return@launch
                 }
+                Log.i(TAG, "Import OK uri=$uri ${source.displayWidth}x${source.displayHeight} ${source.durationMs}ms mime=${source.videoMimeType}")
                 val project = repository.createProject(source.displayName.removeSuffix(".mp4").ifBlank { "New clip" })
                     .copy(source = source, timeline = com.shortsclipper.model.TimelineState(0L, source.durationMs))
                 synchronized(history) { history.clear(); history.push(project) }
                 _state.value = project
                 setupPlayer()
+                withContext(kotlinx.coroutines.Dispatchers.IO) { repository.save(project) }
                 onResult(true, null)
             } catch (t: Throwable) {
                 onResult(false, "Import failed: ${t.message ?: "unsupported media"}")
@@ -151,17 +157,38 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun setupPlayer() {
         val source = _state.value.source ?: return
+        val mediaUri = Uri.parse(source.uri)
+        if (mediaUri.scheme.isNullOrBlank() || source.uri.isBlank()) {
+            playerError.value = "Invalid video URI."
+            Log.e(TAG, "setupPlayer: blank/invalid uri='${source.uri}'")
+            return
+        }
+        playerError.value = null
         val p = player ?: ExoPlayer.Builder(getApplication()).build().also {
             player = it
             it.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     this@EditorViewModel.isPlaying.value = isPlaying
                 }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    val message = "Playback failed (${error.errorCodeName}): ${error.message ?: "cannot open this video"}"
+                    playerError.value = message
+                    Log.e(TAG, message, error)
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        playerError.value = null
+                    }
+                }
             })
         }
-        p.setMediaItem(MediaItem.fromUri(Uri.parse(source.uri)))
+        p.pause()
+        p.setMediaItem(MediaItem.fromUri(mediaUri))
         p.prepare()
         p.seekTo(_state.value.timeline.selectionStartMs.coerceAtLeast(0))
+        Log.i(TAG, "Player prepared for $mediaUri")
     }
 
     // ------------------------------------------------------------- playback
@@ -218,9 +245,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setSelection(startMs: Long, endMs: Long, tag: String = "selection", coalesceMs: Long = 500L) {
         val source = _state.value.source ?: return
-        val minClipMs = 1000L
-        val start = startMs.coerceIn(0, source.durationMs)
-        val end = endMs.coerceIn(start + minClipMs, source.durationMs)
+        val duration = source.durationMs
+        if (duration <= 0L) return
+        val minClipMs = minOf(1000L, duration)
+        val maxStart = (duration - minClipMs).coerceAtLeast(0L)
+        val start = startMs.coerceIn(0L, maxStart)
+        val end = endMs.coerceIn(start + minClipMs, duration)
         commit({ it.copy(timeline = it.timeline.copy(selectionStartMs = start, selectionEndMs = end)) }, tag, coalesceMs)
     }
 
@@ -231,11 +261,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     // ------------------------------------------------------------- tracking
 
     fun setAutoTracking(enabled: Boolean) {
-        if (enabled && _state.value.tracking.autoPath.isEmpty()) {
+        if (!enabled) {
+            cancelFaceDetectionPass()
+            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
+            return
+        }
+        if (_state.value.tracking.autoPath.isEmpty()) {
             commit({ it.copy(tracking = it.tracking.copy(autoEnabled = true)) })
             startFaceDetectionPass()
         } else {
-            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = enabled)) })
+            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = true)) })
         }
     }
 
@@ -270,6 +305,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     // Default to the largest face; the user can tap another one.
                     selectFace(TrackingEngine.largestTrack(rawTracks)?.first()?.faceId ?: 0)
                 }
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // Cancelled by the user or ViewModel teardown.
             } catch (t: Throwable) {
                 if (t !is InterruptedException) {
                     commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
@@ -374,7 +411,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             var pcmFile: File? = null
             try {
                 val decoded = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    VideoManager.decodeAudio16kMono(getApplication(), Uri.parse(source.uri))
+                    VideoManager.decodeAudio16kMono(
+                        getApplication(),
+                        Uri.parse(source.uri),
+                        isCancelled = { !isActive },
+                    )
                 }
                 if (decoded == null) {
                     audioPreparationError.value = "This video has no audio track, so silence detection is unavailable."
@@ -432,16 +473,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun startExport(onDone: (String?) -> Unit = {}) {
         val s = _state.value
         if (s.source == null || exportJob?.isActive == true) return
+        if (s.exportSegments.isEmpty()) {
+            val message = "Nothing to export. Adjust the selection or silence removals."
+            exportState.value = ExportState(phase = ExportPhase.FAILED, message = message)
+            onDone(message)
+            return
+        }
         exportCancelled.set(false)
         exportJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             exportState.value = ExportState(phase = ExportPhase.PREPARING)
+            var ticker: Job? = null
+            val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
+            val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
             try {
                 val plan = exportManager.computePlan(s)
-                val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
-                val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
                 exportState.value = exportState.value.copy(phase = ExportPhase.TRANSFORMING)
-                val ticker = launch {
+                ticker = launch {
                     while (isActive) {
                         delay(500)
                         if (exportState.value.isBusy) {
@@ -471,8 +519,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 onDone(null)
             } catch (e: com.shortsclipper.video.ExportCancelledException) {
+                ticker?.cancel()
+                outFile.delete()
                 exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
             } catch (t: Throwable) {
+                ticker?.cancel()
+                outFile.delete()
                 exportState.value = ExportState(
                     phase = ExportPhase.FAILED,
                     elapsedMs = System.currentTimeMillis() - startedAt,
@@ -505,6 +557,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        exportCancelled.set(true)
+        trackingCancelled.set(true)
         exportJob?.cancel()
         trackingJob?.cancel()
         autosaveJob?.cancel()

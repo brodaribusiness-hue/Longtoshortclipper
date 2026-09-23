@@ -47,10 +47,10 @@ class FaceTracker(private val context: Context) {
             .setMinFaceSize(0.15f)
             .build()
         val detector = FaceDetection.getClient(options)
+        var firstFrame: Bitmap? = null
         try {
             retriever.setDataSource(context, uri)
             val samples = ArrayList<Pair<Long, List<FaceBox>>>()
-            var firstFrame: Bitmap? = null
             var time = startMs.coerceAtLeast(0)
             val safeEnd = maxOf(endMs, startMs + sampleIntervalMs)
             while (time <= safeEnd) {
@@ -77,6 +77,9 @@ class FaceTracker(private val context: Context) {
                 time += sampleIntervalMs
             }
             PassResult(firstFrame, samples)
+        } catch (t: Throwable) {
+            firstFrame?.recycle()
+            throw t
         } finally {
             detector.close()
             retriever.release()
@@ -93,8 +96,9 @@ class FaceTracker(private val context: Context) {
     ): List<com.google.mlkit.vision.face.Face> = suspendCancellableCoroutine { cont ->
         val image = InputImage.fromBitmap(bitmap, 0)
         detector.process(image)
-            .addOnSuccessListener { faces -> cont.resume(faces) }
-            .addOnFailureListener { e -> cont.resumeWithException(e) }
+            .addOnSuccessListener { faces -> if (cont.isActive) cont.resume(faces) }
+            .addOnFailureListener { e -> if (cont.isActive) cont.resumeWithException(e) }
+        cont.invokeOnCancellation { }
     }
 
     private fun extractFrame(retriever: MediaMetadataRetriever, timeUs: Long, maxDim: Int): Bitmap? {

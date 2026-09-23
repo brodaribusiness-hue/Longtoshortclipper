@@ -57,7 +57,11 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
-    val projects by androidx.compose.runtime.produceState(initialValue = viewModel.recentProjects()) {
+    var projectListEpoch by remember { mutableStateOf(0) }
+    val projects by androidx.compose.runtime.produceState(
+        initialValue = viewModel.recentProjects(),
+        projectListEpoch,
+    ) {
         value = viewModel.recentProjects()
     }
 
@@ -161,6 +165,7 @@ fun HomeScreen(
                     }
                     IconButton(onClick = {
                         viewModel.deleteProject(project.id)
+                        projectListEpoch++
                     }) {
                         Icon(Icons.Default.Close, contentDescription = "Delete", tint = TextSecondary)
                     }
