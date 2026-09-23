@@ -670,6 +670,3 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         private const val TAG = "EditorViewModel"
     }
 }
-
-    }
-}

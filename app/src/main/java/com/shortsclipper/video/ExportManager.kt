@@ -227,13 +227,20 @@ class ExportManager(private val context: Context) {
         }
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val uri = resolver.insert(collection, values) ?: throw IOException("MediaStore insert failed")
-        resolver.openOutputStream(uri)?.use { out ->
-            file.inputStream().use { input -> input.copyTo(out) }
-        } ?: throw IOException("Could not open output stream")
-        values.clear()
-        values.put(MediaStore.Video.Media.IS_PENDING, 0)
-        resolver.update(uri, values, null, null)
-        return uri
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                file.inputStream().use { input -> input.copyTo(out) }
+            } ?: throw IOException("Could not open output stream")
+            values.clear()
+            values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            if (resolver.update(uri, values, null, null) == 0) {
+                throw IOException("Could not publish the exported video")
+            }
+            return uri
+        } catch (t: Throwable) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw t
+        }
     }
 
     private fun saveLegacy(file: File, displayName: String): Uri {
@@ -255,10 +262,6 @@ class ExportManager(private val context: Context) {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
         }
         @Suppress("DEPRECATION")
-        return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
-    }
-}
-     @Suppress("DEPRECATION")
         return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
     }
 }
