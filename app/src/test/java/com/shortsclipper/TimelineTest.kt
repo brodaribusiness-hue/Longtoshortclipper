@@ -83,4 +83,25 @@ class TimelineTest {
         assertEquals(1, segments.size)
         assertEquals(1_000L, segments[0].durationMs)
     }
+
+    @Test
+    fun `clip shorter than min segment is still exported`() {
+        val segments = ExportPlanner.buildSegments(0, 200, emptyList())
+        assertEquals(1, segments.size)
+        assertEquals(200L, segments[0].durationMs)
+    }
+
+    @Test
+    fun `overlapping silence cuts still produce a contiguous plan`() {
+        val segments = ExportPlanner.buildSegments(
+            0,
+            10_000,
+            listOf(SilenceEdit(1_000, 4_000), SilenceEdit(2_000, 5_000)),
+        )
+        assertTrue(segments.isNotEmpty())
+        assertTrue(segments.all { it.durationMs >= ExportPlanner.MIN_SEGMENT_MS })
+        for (i in 1 until segments.size) {
+            assertTrue(segments[i].startMs >= segments[i - 1].endMs)
+        }
+    }
 }

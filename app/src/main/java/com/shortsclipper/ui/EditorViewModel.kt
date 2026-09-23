@@ -142,7 +142,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 synchronized(history) { history.clear(); history.push(project) }
                 _state.value = project
                 setupPlayer()
-                scheduleAutosave()
+                withContext(kotlinx.coroutines.Dispatchers.IO) { repository.save(project) }
                 onResult(true, null)
             } catch (t: Throwable) {
                 onResult(false, "Import failed: ${t.message ?: "unsupported media"}")
@@ -160,6 +160,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 }
             })
         }
+        p.pause()
         p.setMediaItem(MediaItem.fromUri(Uri.parse(source.uri)))
         p.prepare()
         p.seekTo(_state.value.timeline.selectionStartMs.coerceAtLeast(0))
@@ -279,6 +280,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     // Default to the largest face; the user can tap another one.
                     selectFace(TrackingEngine.largestTrack(rawTracks)?.first()?.faceId ?: 0)
                 }
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // Cancelled by the user or ViewModel teardown.
             } catch (t: Throwable) {
                 if (t !is InterruptedException) {
                     commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
@@ -383,7 +386,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             var pcmFile: File? = null
             try {
                 val decoded = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    VideoManager.decodeAudio16kMono(getApplication(), Uri.parse(source.uri))
+                    VideoManager.decodeAudio16kMono(
+                        getApplication(),
+                        Uri.parse(source.uri),
+                        isCancelled = { !isActive },
+                    )
                 }
                 if (decoded == null) {
                     audioPreparationError.value = "This video has no audio track, so silence detection is unavailable."
@@ -441,6 +448,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun startExport(onDone: (String?) -> Unit = {}) {
         val s = _state.value
         if (s.source == null || exportJob?.isActive == true) return
+        if (s.exportSegments.isEmpty()) {
+            val message = "Nothing to export. Adjust the selection or silence removals."
+            exportState.value = ExportState(phase = ExportPhase.FAILED, message = message)
+            onDone(message)
+            return
+        }
         exportCancelled.set(false)
         exportJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
@@ -519,6 +532,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        exportCancelled.set(true)
+        trackingCancelled.set(true)
         exportJob?.cancel()
         trackingJob?.cancel()
         autosaveJob?.cancel()
