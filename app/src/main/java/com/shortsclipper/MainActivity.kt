@@ -56,7 +56,10 @@ fun AppRoot(viewModel: EditorViewModel = viewModel()) {
         )
         Screen.Editor -> EditorScreen(
             viewModel = viewModel,
-            onOpenExport = { go(Screen.Export) },
+            onOpenExport = {
+                viewModel.prepareExportScreen()
+                go(Screen.Export)
+            },
             onClose = { back() },
         )
         Screen.Export -> ExportScreen(

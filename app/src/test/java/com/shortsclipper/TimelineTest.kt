@@ -1,10 +1,13 @@
 package com.shortsclipper
 
 import com.shortsclipper.model.ExportPlanner
+import com.shortsclipper.model.PlaybackSkip
 import com.shortsclipper.model.ProjectState
+import com.shortsclipper.model.SelectionConstraints
 import com.shortsclipper.model.SilenceEdit
 import com.shortsclipper.model.TimelineState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -82,5 +85,61 @@ class TimelineTest {
         val segments = ExportPlanner.buildSegments(0, 1_000, emptyList())
         assertEquals(1, segments.size)
         assertEquals(1_000L, segments[0].durationMs)
+    }
+
+    @Test
+    fun `clip shorter than min segment is still exported`() {
+        val segments = ExportPlanner.buildSegments(0, 200, emptyList())
+        assertEquals(1, segments.size)
+        assertEquals(200L, segments[0].durationMs)
+    }
+
+    @Test
+    fun `short speech island is kept without bridging the silence`() {
+        val segments = ExportPlanner.buildSegments(0, 10_000, listOf(SilenceEdit(100, 9_900)))
+        assertEquals(2, segments.size)
+        assertEquals(0L, segments[0].startMs)
+        assertEquals(ExportPlanner.MIN_SEGMENT_MS, segments[0].endMs)
+        assertEquals(9_750L, segments[1].startMs)
+        assertEquals(10_000L, segments[1].endMs)
+        assertTrue(segments[1].startMs > segments[0].endMs + 1_000)
+    }
+
+    @Test
+    fun `overlapping silence cuts produce a non-overlapping plan`() {
+        val segments = ExportPlanner.buildSegments(
+            0,
+            10_000,
+            listOf(SilenceEdit(1_000, 4_000), SilenceEdit(2_000, 5_000)),
+        )
+        assertEquals(2, segments.size)
+        assertEquals(0L, segments[0].startMs)
+        assertEquals(1_120L, segments[0].endMs)
+        assertEquals(4_880L, segments[1].startMs)
+        assertEquals(10_000L, segments[1].endMs)
+        assertTrue(segments.all { it.durationMs >= ExportPlanner.MIN_SEGMENT_MS })
+    }
+
+    @Test
+    fun `preview skip jumps the same gap export removes`() {
+        val segments = ExportPlanner.buildSegments(0, 20_000, listOf(SilenceEdit(5_000, 8_000)))
+        assertNull(PlaybackSkip.gapSkipTarget(1_000, 0, 20_000, segments))
+        assertEquals(7_880L, PlaybackSkip.gapSkipTarget(6_000, 0, 20_000, segments))
+        assertNull(PlaybackSkip.gapSkipTarget(19_000, 0, 20_000, segments))
+    }
+
+    @Test
+    fun `preview skip at a trailing gap stops at the selection end`() {
+        val segments = ExportPlanner.buildSegments(0, 10_000, listOf(SilenceEdit(8_000, 10_120)))
+        assertEquals(10_000L, PlaybackSkip.gapSkipTarget(9_000, 0, 10_000, segments))
+    }
+
+    @Test
+    fun `selection clamp never throws on a short source`() {
+        assertNull(SelectionConstraints.clamp(0, 100, 0))
+        assertEquals(0L to 400L, SelectionConstraints.clamp(0, 10_000, 400))
+        assertEquals(0L to 10_000L, SelectionConstraints.clamp(-50, 50_000, 10_000))
+        val tiny = SelectionConstraints.clamp(0, 100, 10_000)
+        assertEquals(SelectionConstraints.PREFERRED_MIN_MS, tiny!!.second - tiny.first)
     }
 }

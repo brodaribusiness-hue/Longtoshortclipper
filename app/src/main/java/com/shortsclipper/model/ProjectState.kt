@@ -59,34 +59,113 @@ object ExportPlanner {
 
     fun buildSegments(selectionStartMs: Long, selectionEndMs: Long, removals: List<SilenceEdit>): List<ClipSegment> {
         if (selectionEndMs <= selectionStartMs) return emptyList()
-        val clips = removals
+        val cuts = normalizedCuts(selectionStartMs, selectionEndMs, removals)
+        val raw = splitAroundCuts(selectionStartMs, selectionEndMs, cuts)
+        return preserveShortSpeech(raw, selectionStartMs, selectionEndMs)
+    }
+
+    /** Pads silence cuts, drops cuts that vanish inside the pad, and merges overlaps. */
+    private fun normalizedCuts(
+        selectionStartMs: Long,
+        selectionEndMs: Long,
+        removals: List<SilenceEdit>,
+    ): List<SilenceEdit> {
+        val padded = removals
             .map { SilenceEdit(it.startMs + KEEP_PAD_MS, it.endMs - KEEP_PAD_MS) }
             .filter { it.endMs > it.startMs }
             .sortedBy { it.startMs }
+        val merged = ArrayList<SilenceEdit>()
+        for (cut in padded) {
+            val start = cut.startMs.coerceIn(selectionStartMs, selectionEndMs)
+            val end = cut.endMs.coerceIn(selectionStartMs, selectionEndMs)
+            if (end <= start) continue
+            val last = merged.lastOrNull()
+            if (last != null && start <= last.endMs) {
+                merged[merged.lastIndex] = SilenceEdit(last.startMs, maxOf(last.endMs, end))
+            } else {
+                merged.add(SilenceEdit(start, end))
+            }
+        }
+        return merged
+    }
 
+    private fun splitAroundCuts(
+        selectionStartMs: Long,
+        selectionEndMs: Long,
+        cuts: List<SilenceEdit>,
+    ): List<ClipSegment> {
         val segments = ArrayList<ClipSegment>()
         var cursor = selectionStartMs
-        for (cut in clips) {
-            val cutStart = cut.startMs.coerceIn(selectionStartMs, selectionEndMs)
-            val cutEnd = cut.endMs.coerceIn(selectionStartMs, selectionEndMs)
-            if (cutStart > cursor) {
-                segments.add(ClipSegment(cursor, cutStart))
-            }
-            cursor = maxOf(cursor, cutEnd)
+        for (cut in cuts) {
+            if (cut.startMs > cursor) segments.add(ClipSegment(cursor, cut.startMs))
+            cursor = maxOf(cursor, cut.endMs)
         }
         if (cursor < selectionEndMs) segments.add(ClipSegment(cursor, selectionEndMs))
+        return segments
+    }
 
-        // Merge/protect against micro segments so speech is never chopped into slivers.
-        val merged = ArrayList<ClipSegment>()
-        for (seg in segments) {
-            if (seg.durationMs < MIN_SEGMENT_MS && merged.isNotEmpty()) {
-                val prev = merged.removeAt(merged.size - 1)
-                merged.add(ClipSegment(prev.startMs, seg.endMs))
-            } else {
-                merged.add(seg)
+    /**
+     * Extends a short speech island into adjacent removed silence until it
+     * reaches [MIN_SEGMENT_MS]. Never bridges across the silence into the next
+     * speech region — that would undo the removal. A selection shorter than
+     * [MIN_SEGMENT_MS] is kept so a brief source still exports.
+     */
+    private fun preserveShortSpeech(
+        segments: List<ClipSegment>,
+        rangeStart: Long,
+        rangeEnd: Long,
+    ): List<ClipSegment> {
+        if (segments.isEmpty()) return emptyList()
+        val adjusted = ArrayList<ClipSegment>(segments.size)
+        for (i in segments.indices) {
+            val seg = segments[i]
+            if (seg.durationMs >= MIN_SEGMENT_MS) {
+                adjusted.add(seg)
+                continue
             }
+            val deficit = MIN_SEGMENT_MS - seg.durationMs
+            val previousEnd = adjusted.lastOrNull()?.endMs ?: rangeStart
+            val nextStart = segments.getOrNull(i + 1)?.startMs ?: rangeEnd
+            val gapBefore = (seg.startMs - previousEnd).coerceAtLeast(0L)
+            val gapAfter = (nextStart - seg.endMs).coerceAtLeast(0L)
+            val takeBefore = minOf(gapBefore, deficit)
+            val takeAfter = minOf(gapAfter, deficit - takeBefore)
+            adjusted.add(ClipSegment(seg.startMs - takeBefore, seg.endMs + takeAfter))
         }
-        return merged.filter { it.durationMs >= MIN_SEGMENT_MS }
+        val viable = adjusted.filter { it.durationMs >= MIN_SEGMENT_MS }
+        return if (viable.isNotEmpty()) viable else adjusted.filter { it.durationMs > 0L }
+    }
+}
+
+/** Clamps timeline handles so a short source cannot throw or produce an empty range. */
+object SelectionConstraints {
+    const val PREFERRED_MIN_MS = 1000L
+
+    fun clamp(startMs: Long, endMs: Long, durationMs: Long): Pair<Long, Long>? {
+        if (durationMs <= 0L) return null
+        val minClip = minOf(PREFERRED_MIN_MS, durationMs)
+        val maxStart = (durationMs - minClip).coerceAtLeast(0L)
+        val start = startMs.coerceIn(0L, maxStart)
+        val end = endMs.coerceIn(start + minClip, durationMs)
+        return start to end
+    }
+}
+
+/**
+ * Preview silence skipping uses the same segment plan as export, so the
+ * playhead does not play audio that the exporter will cut.
+ */
+object PlaybackSkip {
+    fun gapSkipTarget(
+        positionMs: Long,
+        selectionStartMs: Long,
+        selectionEndMs: Long,
+        segments: List<ClipSegment>,
+    ): Long? {
+        if (segments.isEmpty()) return null
+        if (positionMs < selectionStartMs || positionMs >= selectionEndMs) return null
+        if (segments.any { positionMs >= it.startMs && positionMs < it.endMs }) return null
+        return segments.firstOrNull { it.startMs > positionMs }?.startMs ?: selectionEndMs
     }
 }
 

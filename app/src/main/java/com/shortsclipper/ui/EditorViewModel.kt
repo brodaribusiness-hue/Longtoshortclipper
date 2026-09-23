@@ -2,9 +2,11 @@ package com.shortsclipper.ui
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.shortsclipper.ai.SilenceDetector
@@ -12,24 +14,24 @@ import com.shortsclipper.data.ProjectRepository
 import com.shortsclipper.model.ExportPhase
 import com.shortsclipper.model.ExportState
 import com.shortsclipper.model.FaceBox
-import com.shortsclipper.model.FacePoint
+import com.shortsclipper.model.PlaybackSkip
 import com.shortsclipper.model.ProjectState
-import com.shortsclipper.model.SilenceEdit
+import com.shortsclipper.model.SelectionConstraints
 import com.shortsclipper.model.SmoothingPreset
 import com.shortsclipper.model.TransformKeyframe
 import com.shortsclipper.tracking.FaceTracker
 import com.shortsclipper.tracking.TrackingEngine
 import com.shortsclipper.tracking.TrackingSmoother
+import com.shortsclipper.video.AudioDecodeCancelledException
 import com.shortsclipper.video.ExportManager
 import com.shortsclipper.video.VideoManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -45,7 +47,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val faceTracker = FaceTracker(application)
 
     private val history = com.shortsclipper.model.HistoryStack<ProjectState>()
-    private val stateMutex = Mutex()
 
     private val _state = MutableStateFlow(repository.createProject("Untitled"))
     val state: StateFlow<ProjectState> = _state
@@ -57,12 +58,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     val isPreparingAudio = MutableStateFlow(false)
     val audioPreparationError = MutableStateFlow<String?>(null)
+    val playerError = MutableStateFlow<String?>(null)
     val exportState = MutableStateFlow(ExportState())
     val trackingPassProgress = MutableStateFlow(-1f)
 
     /** First sampled frame bitmap for face target selection (null when none). */
     val faceSelectionFrame = MutableStateFlow<android.graphics.Bitmap?>(null)
     val faceSelectionBoxes = MutableStateFlow<List<FaceBox>>(emptyList())
+    val showFacePicker = MutableStateFlow(false)
 
     /** Raw (unsmoothed) tracks of the last detection pass, for re-smoothing. */
     private var rawTracks: List<List<FaceBox>> = emptyList()
@@ -120,8 +123,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun loadProject(id: String): Boolean {
         val loaded = repository.load(id) ?: return false
-        synchronized(history) { history.clear() }
-        synchronized(history) { history.push(loaded) }
+        cancelFaceDetectionPass()
+        resetTransient(skipSilences = loaded.silenceRemovals.isNotEmpty())
+        synchronized(history) { history.clear(); history.push(loaded) }
         _state.value = loaded
         setupPlayer()
         return true
@@ -133,35 +137,102 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val source = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     VideoManager.readMetadata(getApplication(), uri, displayName)
                 }
-                if (source.durationMs <= 0 || source.displayWidth <= 0) {
+                if (source.durationMs <= 0 || source.displayWidth <= 0 || source.displayHeight <= 0) {
+                    Log.e(TAG, "Import rejected: duration=${source.durationMs} ${source.displayWidth}x${source.displayHeight} uri=$uri")
                     onResult(false, "This file could not be read as a video.")
                     return@launch
                 }
-                val project = repository.createProject(source.displayName.removeSuffix(".mp4").ifBlank { "New clip" })
+                Log.i(TAG, "Import OK uri=$uri ${source.displayWidth}x${source.displayHeight} ${source.durationMs}ms mime=${source.videoMimeType}")
+                cancelFaceDetectionPass()
+                resetTransient(skipSilences = false)
+                val project = repository.createProject(projectNameFrom(source.displayName))
                     .copy(source = source, timeline = com.shortsclipper.model.TimelineState(0L, source.durationMs))
                 synchronized(history) { history.clear(); history.push(project) }
                 _state.value = project
                 setupPlayer()
+                val saved = withContext(kotlinx.coroutines.Dispatchers.IO) { repository.save(project) }
+                if (!saved) Log.w(TAG, "Immediate project save failed for ${project.id}")
                 onResult(true, null)
             } catch (t: Throwable) {
+                Log.e(TAG, "Import failed for $uri", t)
                 onResult(false, "Import failed: ${t.message ?: "unsupported media"}")
             }
         }
     }
 
+    private fun projectNameFrom(displayName: String): String {
+        val base = displayName.substringAfterLast('/').substringAfterLast('\\').trim()
+        val stem = base.substringBeforeLast('.', missingDelimiterValue = base).trim()
+        return stem.ifBlank { "New clip" }
+    }
+
+    private fun resetTransient(skipSilences: Boolean) {
+        playheadMs.value = 0L
+        isPlaying.value = false
+        previewSkipSilences.value = skipSilences
+        audioPreparationError.value = null
+        playerError.value = null
+        trackingPassProgress.value = -1f
+        clearFaceSelection()
+        rawTracks = emptyList()
+    }
+
+    private fun clearFaceSelection() {
+        faceSelectionFrame.value?.recycle()
+        faceSelectionFrame.value = null
+        faceSelectionBoxes.value = emptyList()
+        showFacePicker.value = false
+    }
+
+    fun dismissFacePicker() {
+        showFacePicker.value = false
+    }
+
+    fun revealFacePicker() {
+        if (faceSelectionBoxes.value.isNotEmpty()) {
+            showFacePicker.value = true
+        } else if (_state.value.source != null) {
+            startFaceDetectionPass()
+        }
+    }
+
     private fun setupPlayer() {
         val source = _state.value.source ?: return
+        val mediaUri = runCatching { Uri.parse(source.uri) }.getOrNull()
+        if (mediaUri == null || mediaUri.scheme.isNullOrBlank() || source.uri.isBlank()) {
+            player?.pause()
+            player?.clearMediaItems()
+            playerError.value = "Invalid video URI."
+            Log.e(TAG, "setupPlayer: blank/invalid uri='${source.uri}'")
+            return
+        }
+        playerError.value = null
         val p = player ?: ExoPlayer.Builder(getApplication()).build().also {
             player = it
             it.addListener(object : Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    this@EditorViewModel.isPlaying.value = isPlaying
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    this@EditorViewModel.isPlaying.value = playing
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    val message = "Playback failed (${error.errorCodeName}): ${error.message ?: "cannot open this video"}"
+                    playerError.value = message
+                    Log.e(TAG, message, error)
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        playerError.value = null
+                    }
                 }
             })
         }
-        p.setMediaItem(MediaItem.fromUri(Uri.parse(source.uri)))
+        p.pause()
+        p.setMediaItem(MediaItem.fromUri(mediaUri))
         p.prepare()
         p.seekTo(_state.value.timeline.selectionStartMs.coerceAtLeast(0))
+        playheadMs.value = _state.value.timeline.selectionStartMs.coerceAtLeast(0)
+        Log.i(TAG, "Player prepared for $mediaUri")
     }
 
     // ------------------------------------------------------------- playback
@@ -173,12 +244,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val p = player ?: continue
                 val pos = p.currentPosition.coerceAtLeast(0)
                 val s = _state.value
-                // Preview-time silence skipping mirrors the export segment plan.
-                if (previewSkipSilences.value && s.silenceRemovals.isNotEmpty()) {
-                    val inside = s.silenceRemovals.firstOrNull { pos >= it.startMs && pos < it.endMs }
-                    if (inside != null) {
-                        p.seekTo(inside.endMs + 1)
-                        playheadMs.value = inside.endMs + 1
+                // Skip only while playing so a manual scrub can inspect a pause.
+                if (previewSkipSilences.value && p.isPlaying && s.silenceRemovals.isNotEmpty()) {
+                    val target = PlaybackSkip.gapSkipTarget(
+                        pos,
+                        s.timeline.selectionStartMs,
+                        s.timeline.selectionEndMs,
+                        s.exportSegments,
+                    )
+                    if (target != null && target != pos) {
+                        if (target >= s.timeline.selectionEndMs) {
+                            p.pause()
+                            p.seekTo(s.timeline.selectionStartMs)
+                            playheadMs.value = s.timeline.selectionStartMs
+                        } else {
+                            p.seekTo(target)
+                            playheadMs.value = target
+                        }
                         continue
                     }
                 }
@@ -187,6 +269,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 if (p.isPlaying && s.timeline.selectionEndMs > 0 && pos >= s.timeline.selectionEndMs) {
                     p.pause()
                     p.seekTo(s.timeline.selectionStartMs)
+                    playheadMs.value = s.timeline.selectionStartMs
                 }
             }
         }
@@ -195,8 +278,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun play() {
         val s = _state.value
         val p = player ?: return
-        if (playheadMs.value < s.timeline.selectionStartMs || playheadMs.value >= s.timeline.selectionEndMs) {
-            p.seekTo(s.timeline.selectionStartMs)
+        var start = playheadMs.value
+        if (start < s.timeline.selectionStartMs || start >= s.timeline.selectionEndMs) {
+            start = s.timeline.selectionStartMs
+        }
+        if (previewSkipSilences.value && s.silenceRemovals.isNotEmpty()) {
+            val skip = PlaybackSkip.gapSkipTarget(
+                start,
+                s.timeline.selectionStartMs,
+                s.timeline.selectionEndMs,
+                s.exportSegments,
+            )
+            if (skip != null && skip < s.timeline.selectionEndMs) start = skip
+        }
+        if (start != playheadMs.value) {
+            p.seekTo(start)
+            playheadMs.value = start
         }
         p.play()
     }
@@ -210,18 +307,19 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun seekTo(ms: Long) {
-        player?.seekTo(ms.coerceAtLeast(0))
-        playheadMs.value = ms.coerceAtLeast(0)
+        val clamped = ms.coerceAtLeast(0)
+        player?.seekTo(clamped)
+        playheadMs.value = clamped
     }
 
     // ------------------------------------------------------------- timeline
 
     fun setSelection(startMs: Long, endMs: Long, tag: String = "selection", coalesceMs: Long = 500L) {
         val source = _state.value.source ?: return
-        val minClipMs = 1000L
-        val start = startMs.coerceIn(0, source.durationMs)
-        val end = endMs.coerceIn(start + minClipMs, source.durationMs)
-        commit({ it.copy(timeline = it.timeline.copy(selectionStartMs = start, selectionEndMs = end)) }, tag, coalesceMs)
+        val clamped = SelectionConstraints.clamp(startMs, endMs, source.durationMs) ?: return
+        commit({
+            it.copy(timeline = it.timeline.copy(selectionStartMs = clamped.first, selectionEndMs = clamped.second))
+        }, tag, coalesceMs)
     }
 
     fun setTimelineZoom(zoom: Float) {
@@ -231,11 +329,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     // ------------------------------------------------------------- tracking
 
     fun setAutoTracking(enabled: Boolean) {
-        if (enabled && _state.value.tracking.autoPath.isEmpty()) {
-            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = true)) })
+        if (!enabled) {
+            cancelFaceDetectionPass()
+            showFacePicker.value = false
+            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
+            return
+        }
+        commit({ it.copy(tracking = it.tracking.copy(autoEnabled = true)) })
+        if (_state.value.tracking.autoPath.isEmpty()) {
             startFaceDetectionPass()
-        } else {
-            commit({ it.copy(tracking = it.tracking.copy(autoEnabled = enabled)) })
         }
     }
 
@@ -245,7 +347,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         if (trackingJob?.isActive == true) return
         trackingCancelled.set(false)
         trackingPassProgress.value = 0f
+        showFacePicker.value = false
         trackingJob = viewModelScope.launch {
+            var bitmap: android.graphics.Bitmap? = null
             try {
                 val result = withContext(kotlinx.coroutines.Dispatchers.Default) {
                     faceTracker.detectOverRange(
@@ -256,25 +360,40 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         isCancelled = { trackingCancelled.get() },
                     )
                 }
+                bitmap = result.firstFrameBitmap
+                if (trackingCancelled.get()) return@launch
                 rawTracks = TrackingEngine.associateTracks(result.samples)
                 val firstTime = result.samples.firstOrNull()?.first
                 val firstBoxes = rawTracks.mapNotNull { track ->
                     track.firstOrNull { it.timeMs == firstTime && it.faceId >= 0 }
                 }
-                faceSelectionFrame.value = result.firstFrameBitmap
                 faceSelectionBoxes.value = firstBoxes
+                showFacePicker.value = firstBoxes.isNotEmpty()
                 if (rawTracks.isEmpty()) {
                     // No faces: keep manual reframing, disable auto.
-                    commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false, autoPath = emptyList(), targetFaceId = null, detectedFaces = emptyList())) })
+                    commit({
+                        it.copy(
+                            tracking = it.tracking.copy(
+                                autoEnabled = false,
+                                autoPath = emptyList(),
+                                targetFaceId = null,
+                                detectedFaces = emptyList(),
+                            ),
+                        )
+                    })
                 } else {
                     // Default to the largest face; the user can tap another one.
-                    selectFace(TrackingEngine.largestTrack(rawTracks)?.first()?.faceId ?: 0)
+                    selectFace(TrackingEngine.largestTrack(rawTracks)?.first()?.faceId ?: 0, keepPickerOpen = firstBoxes.size > 1)
                 }
+            } catch (_: CancellationException) {
+                // Cancelled by the user or ViewModel teardown.
             } catch (t: Throwable) {
                 if (t !is InterruptedException) {
+                    Log.e(TAG, "Face tracking failed", t)
                     commit({ it.copy(tracking = it.tracking.copy(autoEnabled = false)) })
                 }
             } finally {
+                bitmap?.recycle()
                 trackingPassProgress.value = -1f
             }
         }
@@ -286,7 +405,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         trackingPassProgress.value = -1f
     }
 
-    fun selectFace(faceId: Int) {
+    fun selectFace(faceId: Int, keepPickerOpen: Boolean = false) {
         val track = TrackingEngine.trackById(rawTracks, faceId) ?: return
         val smoothed = TrackingSmoother.smooth(TrackingEngine.toPath(track), _state.value.tracking.smoothing)
         commit({
@@ -295,9 +414,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     autoEnabled = true,
                     targetFaceId = faceId,
                     autoPath = smoothed,
-                )
+                    detectedFaces = faceSelectionBoxes.value,
+                ),
             )
         })
+        if (!keepPickerOpen) showFacePicker.value = false
     }
 
     fun setSmoothing(preset: SmoothingPreset) {
@@ -313,7 +434,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     /** Adds a manual correction keyframe at the playhead with the current crop center. */
     fun addManualKeyframe() {
         val s = _state.value
-            if (s.source == null) return
+        if (s.source == null) return
         val time = playheadMs.value.coerceIn(s.timeline.selectionStartMs, s.timeline.selectionEndMs)
         val current = com.shortsclipper.video.CropCalculator.rectAt(s, time)
         val keyframe = TransformKeyframe(
@@ -374,7 +495,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             var pcmFile: File? = null
             try {
                 val decoded = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    VideoManager.decodeAudio16kMono(getApplication(), Uri.parse(source.uri))
+                    VideoManager.decodeAudio16kMono(
+                        getApplication(),
+                        Uri.parse(source.uri),
+                        isCancelled = { !isActive },
+                    )
                 }
                 if (decoded == null) {
                     audioPreparationError.value = "This video has no audio track, so silence detection is unavailable."
@@ -387,8 +512,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         envelopeStepMs = SilenceDetector.STEP_MS,
                     )
                 })
-            } catch (_: kotlinx.coroutines.CancellationException) {
-                // ViewModel teardown cancels the preparation coroutine.
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: AudioDecodeCancelledException) {
+                // User left or a newer pass replaced this one.
             } catch (t: Throwable) {
                 audioPreparationError.value = "Could not analyze audio: ${t.message ?: "unsupported audio"}"
             } finally {
@@ -429,19 +556,33 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     // ---------------------------------------------------------------- export
 
+    fun prepareExportScreen() {
+        if (!exportState.value.isBusy) {
+            exportState.value = ExportState()
+        }
+    }
+
     fun startExport(onDone: (String?) -> Unit = {}) {
         val s = _state.value
         if (s.source == null || exportJob?.isActive == true) return
+        if (s.exportSegments.isEmpty()) {
+            val message = "Nothing to export. Adjust the selection or silence removals."
+            exportState.value = ExportState(phase = ExportPhase.FAILED, message = message)
+            onDone(message)
+            return
+        }
+        pause()
         exportCancelled.set(false)
         exportJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             exportState.value = ExportState(phase = ExportPhase.PREPARING)
+            var ticker: Job? = null
+            val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
+            val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
             try {
                 val plan = exportManager.computePlan(s)
-                val outDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
-                val outFile = File(outDir, "shortsclipper_${System.currentTimeMillis()}.mp4")
                 exportState.value = exportState.value.copy(phase = ExportPhase.TRANSFORMING)
-                val ticker = launch {
+                ticker = launch {
                     while (isActive) {
                         delay(500)
                         if (exportState.value.isBusy) {
@@ -450,13 +591,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 val file = exportManager.export(
-                    state = _state.value,
+                    state = s,
                     plan = plan,
                     outFile = outFile,
                     onProgress = { exportState.value = exportState.value.copy(progressPercent = it) },
                     isCancelled = { exportCancelled.get() },
                 )
-                ticker.cancel()
                 exportState.value = exportState.value.copy(phase = ExportPhase.SAVING, progressPercent = 100)
                 val savedUri = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     exportManager.saveToGallery(file, "ShortsClipper_${s.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")}_${System.currentTimeMillis()}.mp4")
@@ -470,15 +610,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     message = "Saved to Gallery > Movies/${ExportManager.GALLERY_FOLDER}",
                 )
                 onDone(null)
+            } catch (e: CancellationException) {
+                outFile.delete()
+                throw e
             } catch (e: com.shortsclipper.video.ExportCancelledException) {
+                outFile.delete()
                 exportState.value = ExportState(phase = ExportPhase.CANCELLED, message = "Export cancelled")
             } catch (t: Throwable) {
+                outFile.delete()
+                val message = friendlyExportError(t)
                 exportState.value = ExportState(
                     phase = ExportPhase.FAILED,
                     elapsedMs = System.currentTimeMillis() - startedAt,
-                    message = friendlyExportError(t),
+                    message = message,
                 )
-                onDone(friendlyExportError(t))
+                onDone(message)
+            } finally {
+                ticker?.cancel()
             }
         }
     }
@@ -495,6 +643,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setExportQuality(mode: com.shortsclipper.model.QualityMode) {
+        if (exportState.value.isBusy) return
         commit({ it.copy(exportQuality = mode) })
     }
 
@@ -505,11 +654,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        exportCancelled.set(true)
+        trackingCancelled.set(true)
         exportJob?.cancel()
         trackingJob?.cancel()
         autosaveJob?.cancel()
+        faceSelectionFrame.value?.recycle()
+        faceSelectionFrame.value = null
         player?.release()
         player = null
         super.onCleared()
+    }
+
+    companion object {
+        private const val TAG = "EditorViewModel"
+    }
+}
+
     }
 }

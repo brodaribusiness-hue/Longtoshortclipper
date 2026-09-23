@@ -17,6 +17,7 @@ leave the device.
 
 ### Player & timeline
 - Media3/ExoPlayer playback: play, pause, accurate seek, current/total time, rotation-safe preview
+- Preview uses a TextureView (not SurfaceView) so the 9:16 crop transform is actually visible and matches export
 - Professional timeline: waveform, draggable start/end handles, playhead scrubbing, zoom (1×–16×)
 - Clip preview with automatic in/out point handling
 - Real state-based undo/redo (timeline, crop, tracking, keyframes, aspect, silence edits, selection)
