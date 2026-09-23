@@ -92,6 +92,20 @@ class ProjectRepositoryTest {
     }
 
     @Test
+    fun `save overwrites existing project without deleting first`() {
+        val repo = ProjectRepository(tmp.root)
+        val original = fullProject("p1").copy(name = "Original")
+        assertTrue(repo.save(original))
+        val updated = original.copy(name = "Updated", updatedAtMs = 9_000L)
+        assertTrue(repo.save(updated))
+        val loaded = repo.load("p1")
+        assertNotNull(loaded)
+        assertEquals("Updated", loaded!!.name)
+        assertEquals(9_000L, loaded.updatedAtMs)
+        assertEquals(1, repo.list().size)
+    }
+
+    @Test
     fun `createProject assigns id and defaults`() {
         val repo = ProjectRepository(tmp.root)
         val project = repo.createProject("My clip", nowMs = 5)

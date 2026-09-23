@@ -32,8 +32,15 @@ class ProjectRepository(private val baseDir: File) {
         val tmp = File(projectsDir, state.id + ".json.tmp")
         return try {
             tmp.writeText(json.encodeToString(ProjectState.serializer(), state))
-            if (target.exists()) target.delete()
-            tmp.renameTo(target)
+            // Rename replaces the previous file atomically on Android/Linux.
+            // Deleting first would drop the last good save if the rename failed.
+            if (!tmp.renameTo(target)) {
+                target.outputStream().use { out ->
+                    tmp.inputStream().use { input -> input.copyTo(out) }
+                }
+                tmp.delete()
+            }
+            true
         } catch (t: Throwable) {
             tmp.delete()
             false

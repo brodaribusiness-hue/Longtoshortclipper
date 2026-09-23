@@ -242,7 +242,12 @@ class ExportManager(private val context: Context) {
         val dir = File(moviesDir, GALLERY_FOLDER)
         if (!dir.exists()) dir.mkdirs()
         val dest = File(dir, displayName)
-        file.inputStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+        try {
+            file.inputStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+        } catch (t: Throwable) {
+            dest.delete()
+            throw t
+        }
         MediaScannerConnection.scanFile(context, arrayOf(dest.absolutePath), arrayOf("video/mp4"), null)
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DATA, dest.absolutePath)
@@ -250,6 +255,10 @@ class ExportManager(private val context: Context) {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
         }
         @Suppress("DEPRECATION")
+        return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
+    }
+}
+     @Suppress("DEPRECATION")
         return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: Uri.fromFile(dest)
     }
 }
